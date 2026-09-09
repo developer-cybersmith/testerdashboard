@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --color-cs-forest: #0b4f3c;
+  --color-cs-forest-deep: #083d2e;
+  --color-cs-mint: #7ddea8;
+  --color-cs-mint-soft: #b8e6c8;
+  --color-cs-sage: #d4edd9;
+  --color-cs-bg: #f3f4f6;
+  --color-cs-card: #ffffff;
+  --color-cs-ink: #1a1d1f;
+  --color-cs-muted: #6b7280;
+  --color-cs-line: #e8eaed;
+  --color-cs-yellow: #f5c542;
+  --color-cs-red: #f07167;
+  --shadow-card: 0 1px 3px rgba(16, 24, 40, 0.04), 0 4px 16px rgba(16, 24, 40, 0.04);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-cs-bg);
+  color: var(--color-cs-ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.striped-bar {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    #e5e7eb,
+    #e5e7eb 3px,
+    #f3f4f6 3px,
+    #f3f4f6 7px
+  );
+}
+
+.striped-arc {
+  stroke: url(#pendingStripes);
+}
+
+.wave-card {
+  background-color: var(--color-cs-forest);
+  background-image:
+    radial-gradient(ellipse 120% 80% at 10% 100%, rgba(125, 222, 168, 0.35) 0%, transparent 55%),
+    radial-gradient(ellipse 90% 70% at 90% 0%, rgba(8, 61, 46, 0.55) 0%, transparent 50%),
+    radial-gradient(ellipse 60% 50% at 50% 50%, rgba(125, 222, 168, 0.12) 0%, transparent 60%);
+}
+
+.wave-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0.45;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 140% 60% at 0% 100%, rgba(125, 222, 168, 0.5), transparent 50%),
+    radial-gradient(ellipse 100% 50% at 100% 0%, rgba(0, 0, 0, 0.25), transparent 55%);
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 999px;
+}
