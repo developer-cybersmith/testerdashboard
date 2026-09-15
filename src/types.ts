@@ -1,4 +1,4 @@
-export type Role = 'admin' | 'tl' | 'user'
+export type Role = 'admin' | 'hr' | 'tl' | 'user'
 
 export type ProjectStatus = 'active' | 'on-hold' | 'closed' | 'draft'
 
@@ -23,8 +23,9 @@ export interface Person {
   gender?: string
   dateOfBirth?: string
   phone?: string
-  address?: string
+  location?: string
   department?: string
+  mustChangePassword?: boolean
   leaveBalance?: LeaveBalance
   performanceScore?: number
   documents?: EmployeeDocument[]
@@ -101,6 +102,8 @@ export interface Project {
   progress: number
   startDate: string
   closureDate?: string
+  initialReportDate?: string
+  closureReportDate?: string
   tlId: string
   allocations: ProjectAllocation[]
   team: TeamMemberBrief[]
@@ -109,7 +112,7 @@ export interface Project {
   vpn: VpnAccess[]
   scopeCredits: ScopeCredit[]
   remarks: string
-  requirements: string[]
+  requirements: ProjectRequirement[]
   taskTrack: TaskTrack
   holdSource?: 'client' | 'internal'
   holdRemark?: string
@@ -133,6 +136,7 @@ export type NotificationType =
   | 'leave'
   | 'requirement'
   | 'lifecycle'
+  | 'worked-day'
 
 export interface AppNotification {
   id: string
@@ -253,6 +257,25 @@ export interface ProjectStatusRequest {
 
 export type RequirementAction = 'add' | 'edit' | 'delete'
 
+export type RequirementStatus = 'fulfilled' | 'pending-client' | 'pending-us' | 'incomplete'
+
+export interface ProjectRequirement {
+  id: string
+  text: string
+  status: RequirementStatus
+}
+
+export const REQUIREMENT_STATUS_OPTIONS: { value: RequirementStatus; label: string }[] = [
+  { value: 'incomplete', label: 'Incomplete' },
+  { value: 'pending-client', label: 'Pending from client' },
+  { value: 'pending-us', label: 'Pending from us' },
+  { value: 'fulfilled', label: 'Fulfilled' },
+]
+
+export function requirementStatusLabel(status: RequirementStatus) {
+  return REQUIREMENT_STATUS_OPTIONS.find((option) => option.value === status)?.label || 'Incomplete'
+}
+
 export interface RequirementChangeRequest {
   id: string
   projectId: string
@@ -263,7 +286,7 @@ export interface RequirementChangeRequest {
   index?: number
   oldValue?: string
   newValue?: string
-  proposedRequirements: string[]
+  proposedRequirements: ProjectRequirement[]
   status: 'pending' | 'approved' | 'rejected'
   createdAt: string
 }
@@ -279,6 +302,8 @@ export interface DailyUpdate {
   workPoints?: string[]
   hoursSpent: number
   slot?: 'morning' | 'evening'
+  markedWorked?: boolean
+  late?: boolean
 }
 
 export interface Blocker {
@@ -287,11 +312,28 @@ export interface Blocker {
   projectName: string
   raisedById: string
   raisedByName: string
+  raisedByRole?: Role
   title: string
   description: string
   severity: BlockerSeverity
   status: BlockerStatus
   createdAt: string
+}
+
+export interface WorkedDayRequest {
+  id: string
+  userId: string
+  userName: string
+  date: string
+  reason: string
+  kind?: 'worked-day' | 'late-morning'
+  projectId?: string
+  workPoints?: string[]
+  hoursSpent?: number
+  status: 'pending' | 'approved' | 'rejected'
+  createdAt: string
+  decidedBy?: string
+  decidedByName?: string
 }
 
 export interface ClientDiscussion {

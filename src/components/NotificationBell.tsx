@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Bell } from 'lucide-react'
-import { personLabel, useApp } from '../context/AppContext'
+import { isOrgAdmin, personLabel, useApp } from '../context/AppContext'
 import { notificationNavKey, roleHasNav, type NavKey } from './Sidebar'
 
 function timeAgo(iso: string) {
@@ -23,6 +23,8 @@ const typeLabel: Record<string, string> = {
   requirement: 'Requirements',
   general: 'Project',
   'peer-review': 'Update',
+  'worked-day': 'Attendance',
+  lifecycle: 'Project',
 }
 
 export default function NotificationBell({
@@ -101,7 +103,7 @@ export default function NotificationBell({
               myNotifications.map((n) => {
                 const forPerson = people.find((p) => p.id === n.recipientId)
                 const showAudience =
-                  session.person.role === 'admin' && n.recipientId !== session.person.id
+                  isOrgAdmin(session.person.role) && n.recipientId !== session.person.id
                 return (
                   <li key={n.id}>
                     <button

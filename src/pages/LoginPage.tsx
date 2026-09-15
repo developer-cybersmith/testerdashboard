@@ -67,8 +67,8 @@ export default function LoginPage() {
               Sign in
             </PrimaryButton>
             <p className="text-[12px] leading-relaxed text-cs-muted">
-              New employees cannot self-register. An Admin creates accounts using
-              a company-domain email only.
+              New employees cannot self-register. HR creates accounts using
+              a company-domain email only. After five failed sign-ins, login is paused for two minutes.
             </p>
           </form>
         </div>

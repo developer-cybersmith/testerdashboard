@@ -1,5 +1,7 @@
+import { useRef, useState } from 'react'
 import type { Project, ScopeCredit, SharePointLink, VpnAccess } from '../types'
 import { Field, inputClass } from './ui'
+import { sanitizeText } from '../security/wstg'
 
 type ShareRow = { title: string; url: string }
 type VpnRow = { type: 'profile' | 'credits'; label: string; details: string; fileName: string }
@@ -31,6 +33,123 @@ export function emptyProjectAccess(): ProjectAccessValues {
 
 function filled(list: string[]) {
   return list.map((item) => item.trim()).filter(Boolean)
+}
+
+function mergeUnique(current: string[], incoming: string[]) {
+  const next = filled(current)
+  const seen = new Set(next.map((item) => item.toLowerCase()))
+  incoming.forEach((item) => {
+    const value = sanitizeText(item, 300)
+    if (!value || seen.has(value.toLowerCase())) return
+    next.push(value)
+    seen.add(value.toLowerCase())
+  })
+  return next.length ? next : ['']
+}
+
+function parseCsvRows(text: string): string[][] {
+  const rows: string[][] = []
+  let row: string[] = []
+  let cell = ''
+  let inQuotes = false
+  const src = text.replace(/^\uFEFF/, '')
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i]
+    const next = src[i + 1]
+    if (inQuotes) {
+      if (ch === '"' && next === '"') {
+        cell += '"'
+        i += 1
+        continue
+      }
+      if (ch === '"') {
+        inQuotes = false
+        continue
+      }
+      cell += ch
+      continue
+    }
+    if (ch === '"') {
+      inQuotes = true
+      continue
+    }
+    if (ch === ',' || ch === ';' || ch === '\t') {
+      row.push(cell)
+      cell = ''
+      continue
+    }
+    if (ch === '\n') {
+      row.push(cell)
+      rows.push(row)
+      row = []
+      cell = ''
+      continue
+    }
+    if (ch === '\r') continue
+    cell += ch
+  }
+  if (cell.length || row.length) {
+    row.push(cell)
+    rows.push(row)
+  }
+  return rows.filter((entry) => entry.some((value) => value.trim()))
+}
+
+function classifyScopeValue(raw: string): 'url' | 'ip' | 'file' | null {
+  const value = sanitizeText(raw, 300)
+  if (!value) return null
+  if (/^(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?$/.test(value)) return 'ip'
+  if (/^[0-9a-f:]+$/i.test(value) && value.includes(':')) return 'ip'
+  if (/^https?:\/\//i.test(value) || /^www\./i.test(value)) return 'url'
+  if (/^[a-z0-9.-]+\.[a-z]{2,}([/:].*)?$/i.test(value) && !value.includes('@') && !/\s/.test(value)) {
+    return 'url'
+  }
+  return 'file'
+}
+
+function headerKind(header: string): 'url' | 'ip' | 'file' | null {
+  const h = header.toLowerCase().replace(/[^a-z]/g, '')
+  if (!h) return null
+  if (h.includes('url') || h.includes('host') || h.includes('domain') || h.includes('endpoint') || h === 'target') {
+    return 'url'
+  }
+  if (h === 'ip' || h === 'ips' || h.includes('ipaddress') || h === 'address') return 'ip'
+  if (h.includes('config') || h.includes('file') || h.includes('asset')) return 'file'
+  return null
+}
+
+export function parseScopeCsv(text: string) {
+  const urls: string[] = []
+  const ips: string[] = []
+  const configFiles: string[] = []
+  const push = (kind: 'url' | 'ip' | 'file', raw: string) => {
+    const value = sanitizeText(raw, 300)
+    if (!value) return
+    if (kind === 'url') urls.push(value)
+    else if (kind === 'ip') ips.push(value)
+    else configFiles.push(value)
+  }
+
+  const rows = parseCsvRows(text).slice(0, 400)
+  if (!rows.length) return { urls, ips, configFiles }
+
+  const headerKinds = rows[0].map((cell) => headerKind(cell))
+  const hasHeader = headerKinds.some(Boolean)
+  const dataRows = hasHeader ? rows.slice(1) : rows
+
+  dataRows.forEach((row) => {
+    row.forEach((cell, index) => {
+      const fromHeader = hasHeader ? headerKinds[index] : null
+      const kind = fromHeader || classifyScopeValue(cell)
+      if (kind) push(kind, cell)
+    })
+  })
+
+  return {
+    urls: mergeUnique([], urls).filter(Boolean),
+    ips: mergeUnique([], ips).filter(Boolean),
+    configFiles: mergeUnique([], configFiles).filter(Boolean),
+  }
 }
 
 export function fromProjectAccess(project: Project): ProjectAccessValues {
@@ -185,6 +304,42 @@ export default function ProjectAccessFields({
   values: ProjectAccessValues
   onChange: (next: ProjectAccessValues) => void
 }) {
+  const csvRef = useRef<HTMLInputElement>(null)
+  const [csvMsg, setCsvMsg] = useState<string | null>(null)
+
+  const importCsv = async (file?: File) => {
+    setCsvMsg(null)
+    if (!file) return
+    if (!/\.csv$/i.test(file.name) && file.type !== 'text/csv') {
+      setCsvMsg('Use a .csv file')
+      return
+    }
+    if (file.size > 400_000) {
+      setCsvMsg('CSV must be under 400 KB')
+      return
+    }
+    const text = await file.text()
+    const parsed = parseScopeCsv(text)
+    if (!parsed.urls.length && !parsed.ips.length && !parsed.configFiles.length) {
+      setCsvMsg('No URLs, IPs, or config files found in that CSV')
+      return
+    }
+    onChange({
+      ...values,
+      urls: mergeUnique(values.urls, parsed.urls),
+      ips: mergeUnique(values.ips, parsed.ips),
+      configFiles: mergeUnique(values.configFiles, parsed.configFiles),
+    })
+    const parts = [
+      parsed.urls.length ? `${parsed.urls.length} URL${parsed.urls.length === 1 ? '' : 's'}` : '',
+      parsed.ips.length ? `${parsed.ips.length} IP${parsed.ips.length === 1 ? '' : 's'}` : '',
+      parsed.configFiles.length
+        ? `${parsed.configFiles.length} config file${parsed.configFiles.length === 1 ? '' : 's'}`
+        : '',
+    ].filter(Boolean)
+    setCsvMsg(`Imported ${parts.join(', ')}`)
+  }
+
   return (
     <div className="md:col-span-2 space-y-4">
       <div className="rounded-2xl border border-cs-line p-4">
@@ -239,7 +394,43 @@ export default function ProjectAccessFields({
       </div>
 
       <div className="rounded-2xl border border-cs-line p-4">
-        <p className="mb-3 text-[14px] font-semibold text-cs-ink">Scope (URLs, IPs, config files)</p>
+        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-[14px] font-semibold text-cs-ink">Scope (URLs, IPs, config files)</p>
+            <p className="mt-1 text-[12px] text-cs-muted">
+              Import a CSV with columns like url, ip, config file, or a mixed list of values.
+            </p>
+          </div>
+          <div className="shrink-0">
+            <input
+              ref={csvRef}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                void importCsv(file)
+                e.target.value = ''
+              }}
+            />
+            <button
+              type="button"
+              className="rounded-xl border border-cs-line px-3 py-2 text-[12px] font-semibold text-cs-forest hover:bg-[#edf7f1]"
+              onClick={() => csvRef.current?.click()}
+            >
+              Import from CSV
+            </button>
+          </div>
+        </div>
+        {csvMsg && (
+          <p
+            className={`mb-3 text-[12px] font-semibold ${
+              csvMsg.startsWith('Imported') ? 'text-cs-forest' : 'text-red-600'
+            }`}
+          >
+            {csvMsg}
+          </p>
+        )}
         <div className="grid gap-3 md:grid-cols-3">
           <StringList
             label="URLs"

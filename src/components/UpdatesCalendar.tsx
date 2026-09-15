@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useApp } from '../context/AppContext'
+import { WorkedDayApprovals } from './WorkedDayRequests'
+import { dayAttendanceMark, testerAttendanceReport } from '../attendance'
 import type { DailyUpdate } from '../types'
 import { Badge, Card, EmptyState } from './ui'
 
@@ -58,19 +60,20 @@ export default function UpdatesCalendar() {
   const [cursor, setCursor] = useState(() => new Date(2026, 7, 1))
   const [selected, setSelected] = useState('2026-08-19')
 
-  const mineOnly = session?.person.role === 'user'
+  const mineOnlyUpdates = session?.person.role === 'user'
+  const ownLeavesOnly = session?.person.role === 'user' || session?.person.role === 'tl'
   const myId = session?.person.id
 
   const visibleUpdates = useMemo(() => {
-    return mineOnly ? updates.filter((u) => u.userId === myId) : updates
-  }, [updates, mineOnly, myId])
+    return mineOnlyUpdates ? updates.filter((u) => u.userId === myId) : updates
+  }, [updates, mineOnlyUpdates, myId])
 
   const visibleLeaves = useMemo(() => {
-    const list = mineOnly
+    const list = ownLeavesOnly
       ? leaveRequests.filter((l) => l.userId === myId)
       : leaveRequests
     return list.filter((l) => l.status !== 'rejected')
-  }, [leaveRequests, mineOnly, myId])
+  }, [leaveRequests, ownLeavesOnly, myId])
 
   const events = useMemo(() => {
     const items: CalEvent[] = []
@@ -98,7 +101,7 @@ export default function UpdatesCalendar() {
           id: `${lv.id}-${date}`,
           date,
           kind: 'leave',
-          title: `Leave · ${lv.status === 'approved' ? 'Approved' : lv.status === 'pending-admin' ? 'Pending Admin' : 'Pending TL'}`,
+          title: `Leave · ${lv.status === 'approved' ? 'Approved' : lv.status === 'pending-admin' ? 'Pending Admin / HR' : 'Pending TL'}`,
           person: lv.userName,
           note: lv.reason,
           tone: 'leave',
@@ -160,6 +163,7 @@ export default function UpdatesCalendar() {
 
   return (
     <div className="space-y-4">
+      <WorkedDayApprovals />
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Total schedules" value={events.length} className="bg-cs-forest text-white" />
         <Metric label="Daily updates" value={updateCount} className="bg-[#edf7f1] text-cs-forest" />
@@ -206,6 +210,22 @@ export default function UpdatesCalendar() {
             {cells.map((cell, index) => {
               const dayEvents = eventsByDate.get(cell.date) || []
               const isSelected = selected === cell.date
+              const attend =
+                session?.person.role === 'user' && myId
+                  ? dayAttendanceMark(updates, leaveRequests, myId, cell.date)
+                  : null
+              const dayTone =
+                attend === 'present'
+                  ? 'bg-[#14b8a6] text-white'
+                  : attend === 'half'
+                    ? 'bg-[#facc15] text-[#713f12]'
+                    : attend === 'leave'
+                      ? 'bg-cs-forest text-white'
+                      : isSelected
+                        ? 'bg-cs-forest text-white'
+                        : cell.inMonth
+                          ? 'text-cs-ink'
+                          : 'text-cs-muted/50'
               return (
                 <button
                   key={`${cell.date}-${index}`}
@@ -216,13 +236,7 @@ export default function UpdatesCalendar() {
                   }`}
                 >
                   <span
-                    className={`inline-flex h-7 w-7 items-center justify-center rounded-full text-[13px] font-semibold ${
-                      isSelected
-                        ? 'bg-cs-forest text-white'
-                        : cell.inMonth
-                          ? 'text-cs-ink'
-                          : 'text-cs-muted/50'
-                    }`}
+                    className={`inline-flex h-7 w-7 items-center justify-center rounded-full text-[13px] font-semibold ${dayTone}`}
                   >
                     {cell.day}
                   </span>
@@ -314,12 +328,9 @@ function Metric({
 }
 
 export function UserAttendanceWidgets() {
-  const { session, updates, leaveRequests } = useApp()
+  const { session, updates, leaveRequests, blockers, projects, queries } = useApp()
   const [cursor, setCursor] = useState(() => new Date(2026, 7, 1))
   const myId = session?.person.id
-  const mine = updates.filter((u) => u.userId === myId)
-  const myLeaves = leaveRequests.filter((l) => l.userId === myId && l.status === 'approved')
-
   const year = cursor.getFullYear()
   const month = cursor.getMonth()
   const first = new Date(year, month, 1)
@@ -328,25 +339,18 @@ export function UserAttendanceWidgets() {
   const cells = Array.from({ length: startPad + daysInMonth }, (_, i) =>
     i < startPad ? null : i - startPad + 1,
   )
-
-  const updateDates = new Set(mine.filter((u) => u.date.startsWith(isoDate(year, month, 1).slice(0, 7))).map((u) => u.date))
-  const leaveDates = new Set(
-    myLeaves.flatMap((l) => eachDate(l.fromDate, l.toDate)),
-  )
-
-  const workingDays = Array.from({ length: daysInMonth }, (_, i) => i + 1).filter((day) => {
-    const d = new Date(year, month, day).getDay()
-    return d !== 0 && d !== 6
-  }).length
-  const present = updateDates.size
-  const rate = workingDays ? Math.round((present / workingDays) * 100) : 0
-
-  const slots = ['8:00 AM', '8:30 AM', '9:00 AM', '9:30 AM', '10:00 AM', '10:30 AM']
-  const weekDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
-  const intensity = (row: number, col: number) => {
-    const score = (present + row * 2 + col) % 4
-    return ['bg-[#f3f4f6]', 'bg-[#d4edd9]', 'bg-[#7ddea8]', 'bg-cs-forest'][score]
-  }
+  const report = myId
+    ? testerAttendanceReport({
+        userId: myId,
+        year,
+        month,
+        updates,
+        leaves: leaveRequests,
+        blockers,
+        projects,
+        queries,
+      })
+    : null
 
   return (
     <div className="grid gap-4 xl:grid-cols-12">
@@ -375,8 +379,8 @@ export function UserAttendanceWidgets() {
           </div>
         </div>
         <div className="grid grid-cols-7 gap-1 text-center text-[11px] font-semibold text-cs-muted">
-          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d) => (
-            <div key={d} className="py-1">
+          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
+            <div key={`${d}-${i}`} className="py-1">
               {d}
             </div>
           ))}
@@ -385,17 +389,18 @@ export function UserAttendanceWidgets() {
           {cells.map((day, index) => {
             if (!day) return <div key={`p-${index}`} className="h-9" />
             const date = isoDate(year, month, day)
-            const hasUpdate = updateDates.has(date)
-            const hasLeave = leaveDates.has(date)
+            const mark = report?.marks[date] || 'absent'
             return (
               <div key={date} className="flex h-9 items-center justify-center">
                 <span
                   className={`flex h-8 w-8 items-center justify-center rounded-full text-[12px] font-semibold ${
-                    hasLeave
+                    mark === 'leave'
                       ? 'bg-cs-forest text-white'
-                      : hasUpdate
+                      : mark === 'present'
                         ? 'bg-[#14b8a6] text-white'
-                        : 'text-cs-ink'
+                        : mark === 'half'
+                          ? 'bg-[#facc15] text-[#713f12]'
+                          : 'text-cs-ink'
                   }`}
                 >
                   {day}
@@ -404,9 +409,12 @@ export function UserAttendanceWidgets() {
             )
           })}
         </div>
-        <div className="mt-3 flex gap-3 text-[11px] text-cs-muted">
+        <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-cs-muted">
           <span className="inline-flex items-center gap-1">
-            <span className="h-2.5 w-2.5 rounded-full bg-[#14b8a6]" /> Update
+            <span className="h-2.5 w-2.5 rounded-full bg-[#14b8a6]" /> Present (both slots)
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="h-2.5 w-2.5 rounded-full bg-[#facc15]" /> Half day (one slot)
           </span>
           <span className="inline-flex items-center gap-1">
             <span className="h-2.5 w-2.5 rounded-full bg-cs-forest" /> Leave
@@ -418,32 +426,68 @@ export function UserAttendanceWidgets() {
         <div className="mb-3 flex items-start justify-between gap-2">
           <div>
             <h3 className="text-[15px] font-bold text-cs-ink">Attendance Report</h3>
-            <p className="text-[12px] text-cs-muted">This Month</p>
+            <p className="text-[12px] text-cs-muted">
+              Built from daily updates, blockers found, and project engagement this month
+            </p>
           </div>
           <div className="text-right">
-            <p className="text-[28px] font-bold leading-none text-cs-ink">{rate}%</p>
+            <p className="text-[28px] font-bold leading-none text-cs-ink">{report?.rate ?? 0}%</p>
             <p className="mt-1 text-[11px] text-cs-muted">Attendance Rate</p>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <div className="min-w-[420px]">
-            <div className="mb-2 grid grid-cols-[72px_repeat(5,1fr)] gap-2 pl-[72px] text-center text-[11px] text-cs-muted">
-              {weekDays.map((d) => (
-                <div key={d}>{d}</div>
-              ))}
-            </div>
-            {slots.map((slot, row) => (
-              <div key={slot} className="mb-2 grid grid-cols-[72px_repeat(5,1fr)] items-center gap-2">
-                <span className="text-[11px] text-cs-muted">{slot}</span>
-                {weekDays.map((d, col) => (
-                  <div
-                    key={`${slot}-${d}`}
-                    className={`h-7 rounded-md ${intensity(row, col)}`}
-                  />
-                ))}
-              </div>
-            ))}
+        <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div className="rounded-xl bg-[#edf7f1] px-3 py-2">
+            <p className="text-[11px] text-cs-muted">Present days</p>
+            <p className="text-[18px] font-bold text-cs-ink">{report?.present ?? 0}</p>
           </div>
+          <div className="rounded-xl bg-[#fef9c3] px-3 py-2">
+            <p className="text-[11px] text-cs-muted">Half days</p>
+            <p className="text-[18px] font-bold text-cs-ink">{report?.half ?? 0}</p>
+          </div>
+          <div className="rounded-xl bg-[#f7f8fa] px-3 py-2">
+            <p className="text-[11px] text-cs-muted">Daily updates</p>
+            <p className="text-[18px] font-bold text-cs-ink">{report?.updateCount ?? 0}</p>
+          </div>
+          <div className="rounded-xl bg-[#f7f8fa] px-3 py-2">
+            <p className="text-[11px] text-cs-muted">Blockers found</p>
+            <p className="text-[18px] font-bold text-cs-ink">{report?.blockersFound ?? 0}</p>
+          </div>
+        </div>
+        <p className="mb-2 text-[12px] text-cs-muted">
+          Morning slots {report?.morningCount ?? 0} · Evening slots {report?.eveningCount ?? 0} ·
+          High/critical blockers {report?.blockersCritical ?? 0}
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[420px] text-left text-[12px]">
+            <thead>
+              <tr className="border-b border-cs-line text-cs-muted">
+                <th className="py-2 font-semibold">Project engagement</th>
+                <th className="py-2 font-semibold">Updates</th>
+                <th className="py-2 font-semibold">Hours</th>
+                <th className="py-2 font-semibold">Blockers</th>
+                <th className="py-2 font-semibold">Queries</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(report?.projectEngagement || []).length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-3 text-cs-muted">
+                    No assigned projects this month.
+                  </td>
+                </tr>
+              ) : (
+                report?.projectEngagement.map((row) => (
+                  <tr key={row.projectId} className="border-b border-cs-line/70">
+                    <td className="py-2 font-semibold text-cs-ink">{row.name}</td>
+                    <td className="py-2 text-cs-muted">{row.updates}</td>
+                    <td className="py-2 text-cs-muted">{row.hours.toFixed(1)}</td>
+                    <td className="py-2 text-cs-muted">{row.blockers}</td>
+                    <td className="py-2 text-cs-muted">{row.queries}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       </Card>
     </div>

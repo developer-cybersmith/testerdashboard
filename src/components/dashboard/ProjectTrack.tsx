@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useApp } from '../../context/AppContext'
 import type { Project, TaskTrack } from '../../types'
 import { Card } from '../ui'
@@ -29,7 +30,17 @@ function TickBar({ percent, color }: { percent: number; color: string }) {
   )
 }
 
-function StatusPopup({ track, title }: { track: TaskTrack; title: string }) {
+function StatusPopup({
+  track,
+  title,
+  anchor,
+}: {
+  track: TaskTrack
+  title: string
+  anchor: HTMLElement
+}) {
+  const popupRef = useRef<HTMLDivElement>(null)
+  const [coords, setCoords] = useState<{ top: number; left: number; below: boolean } | null>(null)
   const total = track.todo + track.inProgress + track.done || 1
   const rows = [
     {
@@ -52,8 +63,44 @@ function StatusPopup({ track, title }: { track: TaskTrack; title: string }) {
     },
   ]
 
-  return (
-    <div className="absolute left-1/2 top-0 z-20 w-[220px] -translate-x-1/2 -translate-y-[calc(100%+10px)] rounded-xl bg-white p-3 shadow-xl ring-1 ring-black/5">
+  useLayoutEffect(() => {
+    const place = () => {
+      const popup = popupRef.current
+      const rect = anchor.getBoundingClientRect()
+      const width = popup?.offsetWidth || 220
+      const height = popup?.offsetHeight || 148
+      const gap = 10
+      const fitsBelow = rect.bottom + gap + height <= window.innerHeight - 8
+      const fitsAbove = rect.top - gap - height >= 8
+      const below = fitsBelow || !fitsAbove
+      const left = Math.min(
+        Math.max(8, rect.left + rect.width / 2 - width / 2),
+        window.innerWidth - width - 8,
+      )
+      const top = below
+        ? Math.min(rect.bottom + gap, window.innerHeight - height - 8)
+        : Math.max(8, rect.top - height - gap)
+      setCoords({ top, left, below })
+    }
+    place()
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [anchor, track, title])
+
+  return createPortal(
+    <div
+      ref={popupRef}
+      className="pointer-events-none fixed z-[80] w-[220px] rounded-xl bg-white p-3 shadow-xl ring-1 ring-black/5"
+      style={
+        coords
+          ? { top: coords.top, left: coords.left }
+          : { top: 0, left: 0, visibility: 'hidden' }
+      }
+    >
       <p className="mb-2 text-[12px] font-bold text-cs-ink">{title}</p>
       <ul className="space-y-2">
         {rows.map((r) => (
@@ -76,8 +123,13 @@ function StatusPopup({ track, title }: { track: TaskTrack; title: string }) {
           </li>
         ))}
       </ul>
-      <span className="absolute left-1/2 top-full -translate-x-1/2 border-[6px] border-transparent border-t-white" />
-    </div>
+      <span
+        className={`absolute left-1/2 -translate-x-1/2 border-[6px] border-transparent ${
+          coords?.below ? 'bottom-full border-b-white' : 'top-full border-t-white'
+        }`}
+      />
+    </div>,
+    document.body,
   )
 }
 
@@ -103,11 +155,11 @@ function usePeriodProjects(period: DashPeriod) {
 
 export function ProjectTrackCard() {
   const [period, setPeriod] = useState<DashPeriod>('this-month')
-  const [hovered, setHovered] = useState<string | null>(null)
+  const [hovered, setHovered] = useState<{ id: string; el: HTMLElement } | null>(null)
   const projects = usePeriodProjects(period)
 
   return (
-    <Card>
+    <Card className="overflow-visible">
       <div className="mb-4 flex items-center justify-between gap-2">
         <h3 className="text-[16px] font-semibold text-cs-ink">Project Track</h3>
         <FilterSelect
@@ -131,10 +183,12 @@ export function ProjectTrackCard() {
               <li
                 key={p.id}
                 className="relative"
-                onMouseEnter={() => setHovered(p.id)}
+                onMouseEnter={(e) => setHovered({ id: p.id, el: e.currentTarget })}
                 onMouseLeave={() => setHovered(null)}
               >
-                {hovered === p.id && <StatusPopup track={p.taskTrack} title={p.name} />}
+                {hovered?.id === p.id && (
+                  <StatusPopup track={p.taskTrack} title={p.name} anchor={hovered.el} />
+                )}
                 <div className="mb-1.5 flex items-center justify-between gap-2">
                   <p className="text-[13px] font-medium text-cs-ink">{p.name}</p>
                   <p className="text-[12px] font-semibold text-cs-muted">
@@ -153,7 +207,7 @@ export function ProjectTrackCard() {
 
 export function TaskOverviewCard() {
   const [period, setPeriod] = useState<DashPeriod>('this-month')
-  const [hovered, setHovered] = useState<string | null>(null)
+  const [hovered, setHovered] = useState<{ id: string; el: HTMLElement } | null>(null)
   const projects = usePeriodProjects(period)
 
   const summary = projects.reduce(
@@ -168,7 +222,7 @@ export function TaskOverviewCard() {
   const total = summary.todo + summary.inProgress + summary.done || 1
 
   return (
-    <Card>
+    <Card className="overflow-visible">
       <div className="mb-4 flex items-center justify-between gap-2">
         <h3 className="text-[16px] font-semibold text-cs-ink">Task Overview</h3>
         <div className="flex items-center gap-2">
@@ -207,11 +261,11 @@ export function TaskOverviewCard() {
             <li
               key={p.id}
               className="relative rounded-xl border border-cs-line px-3 py-2.5 transition-colors hover:bg-[#f7f8fa]"
-              onMouseEnter={() => setHovered(p.id)}
+              onMouseEnter={(e) => setHovered({ id: p.id, el: e.currentTarget })}
               onMouseLeave={() => setHovered(null)}
             >
-              {hovered === p.id && (
-                <StatusPopup track={p.taskTrack} title={`${p.name} status`} />
+              {hovered?.id === p.id && (
+                <StatusPopup track={p.taskTrack} title={`${p.name} status`} anchor={hovered.el} />
               )}
               <div className="mb-1.5 flex items-center justify-between">
                 <p className="text-[13px] font-semibold text-cs-ink">{p.name}</p>

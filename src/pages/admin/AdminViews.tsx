@@ -1,16 +1,10 @@
 import { useState, type FormEvent } from 'react'
-import {
-  COMPANY_DOMAIN,
-  nextEmployeeCode,
-  personLabel,
-  roleLabel,
-  useApp,
-} from '../../context/AppContext'
+import { personLabel, roleLabel, COMPANY_DOMAIN, nextEmployeeCode, OFFICE_LOCATIONS, useApp } from '../../context/AppContext'
 import type { NavKey } from '../../components/Sidebar'
-import type { Role } from '../../types'
 import { LeadDashboardWidgets } from '../../components/dashboard/DashboardWidgets'
 import { Badge, Card, Field, PrimaryButton, SecondaryButton, SectionTitle, inputClass } from '../../components/ui'
 import EmployeeDetails from '../../components/EmployeeDetails'
+import type { Role } from '../../types'
 import {
   TLActiveProjects,
   TLBlockersView,
@@ -40,7 +34,9 @@ function AdminOverview() {
                   <p className="text-[14px] font-semibold text-cs-ink">{p.name}</p>
                   <p className="text-[12px] text-cs-muted">
                     {p.client} · {p.allocations.length} allocated · Start {p.startDate}
-                    {p.closureDate ? ` · Closed ${p.closureDate}` : ''}
+                    {p.closureDate
+                      ? ` · ${p.status === 'closed' ? 'Closed' : 'Closure'} ${p.closureDate}`
+                      : ''}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -131,30 +127,192 @@ function AdminProjects() {
   )
 }
 
+function HrAddEmployeeForm() {
+  const { people, registerEmployee } = useApp()
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [role, setRole] = useState<Role>('user')
+  const [employeeCode, setEmployeeCode] = useState(() => nextEmployeeCode(people))
+  const [jobTitle, setJobTitle] = useState('')
+  const [department, setDepartment] = useState('VAPT')
+  const [employmentType, setEmploymentType] = useState('Full-Time')
+  const [joinDate, setJoinDate] = useState('')
+  const [gender, setGender] = useState('')
+  const [dateOfBirth, setDateOfBirth] = useState('')
+  const [phone, setPhone] = useState('')
+  const [location, setLocation] = useState('')
+  const [formError, setFormError] = useState<string | null>(null)
+  const [ok, setOk] = useState<string | null>(null)
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    setOk(null)
+    const error = registerEmployee({
+      name,
+      email,
+      password,
+      role,
+      employeeCode,
+      jobTitle,
+      department,
+      employmentType,
+      joinDate,
+      gender,
+      dateOfBirth,
+      phone,
+      location,
+    })
+    if (error) {
+      setFormError(error)
+      return
+    }
+    setFormError(null)
+    setOk(`${name.trim()} was added. They must change the temporary password on first login.`)
+    setName('')
+    setEmail('')
+    setPassword('')
+    setRole('user')
+    setEmployeeCode(nextEmployeeCode([...people, { employeeCode }]))
+    setJobTitle('')
+    setDepartment('VAPT')
+    setEmploymentType('Full-Time')
+    setJoinDate('')
+    setGender('')
+    setDateOfBirth('')
+    setPhone('')
+    setLocation('')
+  }
+
+  return (
+    <Card>
+      <SectionTitle title="Add employee" />
+      <p className="mb-3 text-[12px] text-cs-muted">
+        HR can create Tester and Team Leader accounts. Use a company email (@{COMPANY_DOMAIN}).
+        Temporary password: 8–128 characters with upper, lower, number, and a symbol.
+      </p>
+      <form className="grid gap-3 md:grid-cols-2" onSubmit={submit}>
+        <Field label="Full name">
+          <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} required />
+        </Field>
+        <Field label={`Company email (@${COMPANY_DOMAIN})`}>
+          <input
+            className={inputClass}
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder={`name@${COMPANY_DOMAIN}`}
+            required
+          />
+        </Field>
+        <Field label="Temporary password">
+          <input
+            className={inputClass}
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            minLength={8}
+            required
+          />
+        </Field>
+        <Field label="Role">
+          <select
+            className={inputClass}
+            value={role}
+            onChange={(e) => setRole(e.target.value as Role)}
+          >
+            <option value="user">Tester</option>
+            <option value="tl">Team Leader</option>
+          </select>
+        </Field>
+        <Field label="Employee ID">
+          <input
+            className={inputClass}
+            value={employeeCode}
+            onChange={(e) => setEmployeeCode(e.target.value.toUpperCase())}
+            placeholder="EMP-007"
+            required
+          />
+        </Field>
+        <Field label="Job title">
+          <input
+            className={inputClass}
+            value={jobTitle}
+            onChange={(e) => setJobTitle(e.target.value)}
+            placeholder="e.g. Security Analyst"
+          />
+        </Field>
+        <Field label="Department">
+          <input className={inputClass} value={department} onChange={(e) => setDepartment(e.target.value)} />
+        </Field>
+        <Field label="Employment type">
+          <select
+            className={inputClass}
+            value={employmentType}
+            onChange={(e) => setEmploymentType(e.target.value)}
+          >
+            <option>Full-Time</option>
+            <option>Intern</option>
+            <option>Contract</option>
+          </select>
+        </Field>
+        <Field label="Join date">
+          <input
+            className={inputClass}
+            type="date"
+            value={joinDate}
+            onChange={(e) => setJoinDate(e.target.value)}
+          />
+        </Field>
+        <Field label="Gender">
+          <select className={inputClass} value={gender} onChange={(e) => setGender(e.target.value)}>
+            <option value="">Select</option>
+            <option value="Female">Female</option>
+            <option value="Male">Male</option>
+            <option value="Other">Other</option>
+          </select>
+        </Field>
+        <Field label="Date of birth">
+          <input
+            className={inputClass}
+            type="date"
+            value={dateOfBirth}
+            onChange={(e) => setDateOfBirth(e.target.value)}
+          />
+        </Field>
+        <Field label="Phone">
+          <input className={inputClass} value={phone} onChange={(e) => setPhone(e.target.value)} />
+        </Field>
+        <div className="md:col-span-2">
+          <Field label="Location">
+            <select className={inputClass} value={location} onChange={(e) => setLocation(e.target.value)}>
+              <option value="">Select city</option>
+              {OFFICE_LOCATIONS.map((city) => (
+                <option key={city} value={city}>
+                  {city}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        {formError && (
+          <p className="md:col-span-2 text-[12px] font-semibold text-red-600">{formError}</p>
+        )}
+        {ok && <p className="md:col-span-2 text-[12px] font-semibold text-cs-forest">{ok}</p>}
+        <PrimaryButton type="submit">Add employee</PrimaryButton>
+      </form>
+    </Card>
+  )
+}
+
 function AdminPeople() {
-  const { people, renamePerson, registerEmployee, updateEmployeeCode } = useApp()
+  const { people, renamePerson, updateEmployeeCode, session } = useApp()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [jobTitle, setJobTitle] = useState('')
   const [employeeCode, setEmployeeCode] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
-  const [formOk, setFormOk] = useState<string | null>(null)
-  const [reg, setReg] = useState({
-    name: '',
-    localEmail: '',
-    password: '',
-    role: 'user' as Role,
-    jobTitle: '',
-    phone: '',
-    department: 'VAPT',
-    employmentType: 'Full-Time',
-    employeeCode: nextEmployeeCode(people),
-    joinDate: '',
-    gender: '',
-    dateOfBirth: '',
-    address: '',
-  })
 
   const selected = people.find((p) => p.id === selectedId)
 
@@ -165,6 +323,7 @@ function AdminPeople() {
     setName(person.name)
     setJobTitle(person.jobTitle || '')
     setEmployeeCode(person.employeeCode || '')
+    setFormError(null)
   }
 
   const save = (e: FormEvent) => {
@@ -176,45 +335,8 @@ function AdminPeople() {
       setFormError(codeError)
       return
     }
-    setEditingId(null)
-  }
-
-  const submitRegister = (e: FormEvent) => {
-    e.preventDefault()
     setFormError(null)
-    setFormOk(null)
-    const error = registerEmployee({
-      name: reg.name,
-      email: `${reg.localEmail}@${COMPANY_DOMAIN}`,
-      password: reg.password,
-      role: reg.role === 'admin' ? 'user' : reg.role,
-      jobTitle: reg.jobTitle,
-      phone: reg.phone,
-      department: reg.department,
-      employmentType: reg.employmentType,
-      employeeCode: reg.employeeCode,
-      joinDate: reg.joinDate,
-      gender: reg.gender,
-      dateOfBirth: reg.dateOfBirth,
-      address: reg.address,
-    })
-    if (error) {
-      setFormError(error)
-      return
-    }
-    setFormOk(`Registered ${reg.name} with ${reg.localEmail}@${COMPANY_DOMAIN}`)
-    setReg((prev) => ({
-      ...prev,
-      name: '',
-      localEmail: '',
-      password: '',
-      jobTitle: '',
-      phone: '',
-      gender: '',
-      dateOfBirth: '',
-      address: '',
-      employeeCode: nextEmployeeCode([...people, { employeeCode: reg.employeeCode }]),
-    }))
+    setEditingId(null)
   }
 
   if (selected) {
@@ -228,147 +350,10 @@ function AdminPeople() {
 
   return (
     <div className="space-y-4">
-      <Card>
-        <SectionTitle title="Register new employee" />
-        <p className="mb-4 text-[13px] text-cs-muted">
-          Only Admin can create accounts. Emails must use @{COMPANY_DOMAIN}.
-        </p>
-        <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" onSubmit={submitRegister}>
-          <Field label="Full name">
-            <input
-              className={inputClass}
-              value={reg.name}
-              onChange={(e) => setReg({ ...reg, name: e.target.value })}
-              required
-            />
-          </Field>
-          <Field label="Company email">
-            <div className="flex overflow-hidden rounded-xl border border-cs-line">
-              <input
-                className="min-w-0 flex-1 px-3 py-2.5 text-[13px] outline-none"
-                value={reg.localEmail}
-                onChange={(e) =>
-                  setReg({ ...reg, localEmail: e.target.value.replace(/@.*$/, '') })
-                }
-                placeholder="first.last"
-                required
-              />
-              <span className="shrink-0 bg-[#f7f8fa] px-3 py-2.5 text-[12px] font-semibold text-cs-muted">
-                @{COMPANY_DOMAIN}
-              </span>
-            </div>
-          </Field>
-          <Field label="Temporary password">
-            <input
-              className={inputClass}
-              type="password"
-              minLength={8}
-              value={reg.password}
-              onChange={(e) => setReg({ ...reg, password: e.target.value })}
-              required
-            />
-          </Field>
-          <Field label="Role">
-            <select
-              className={inputClass}
-              value={reg.role}
-              onChange={(e) => setReg({ ...reg, role: e.target.value as Role })}
-            >
-              <option value="user">Tester</option>
-              <option value="tl">Team Leader</option>
-            </select>
-          </Field>
-          <Field label="Employee ID">
-            <input
-              className={inputClass}
-              value={reg.employeeCode}
-              onChange={(e) => setReg({ ...reg, employeeCode: e.target.value.toUpperCase() })}
-              placeholder="EMP-001"
-              required
-            />
-          </Field>
-          <Field label="Job title">
-            <input
-              className={inputClass}
-              value={reg.jobTitle}
-              onChange={(e) => setReg({ ...reg, jobTitle: e.target.value })}
-              placeholder="Security Analyst"
-            />
-          </Field>
-          <Field label="Department">
-            <input
-              className={inputClass}
-              value={reg.department}
-              onChange={(e) => setReg({ ...reg, department: e.target.value })}
-            />
-          </Field>
-          <Field label="Employment type">
-            <select
-              className={inputClass}
-              value={reg.employmentType}
-              onChange={(e) => setReg({ ...reg, employmentType: e.target.value })}
-            >
-              <option>Full-Time</option>
-              <option>Part-Time</option>
-              <option>Contract</option>
-              <option>Intern</option>
-            </select>
-          </Field>
-          <Field label="Join date">
-            <input
-              className={inputClass}
-              type="date"
-              value={reg.joinDate}
-              onChange={(e) => setReg({ ...reg, joinDate: e.target.value })}
-            />
-          </Field>
-          <Field label="Gender">
-            <input
-              className={inputClass}
-              value={reg.gender}
-              onChange={(e) => setReg({ ...reg, gender: e.target.value })}
-            />
-          </Field>
-          <Field label="Date of birth">
-            <input
-              className={inputClass}
-              type="date"
-              value={reg.dateOfBirth}
-              onChange={(e) => setReg({ ...reg, dateOfBirth: e.target.value })}
-            />
-          </Field>
-          <Field label="Phone">
-            <input
-              className={inputClass}
-              value={reg.phone}
-              onChange={(e) => setReg({ ...reg, phone: e.target.value })}
-            />
-          </Field>
-          <div className="md:col-span-2 xl:col-span-3">
-            <Field label="Address">
-              <input
-                className={inputClass}
-                value={reg.address}
-                onChange={(e) => setReg({ ...reg, address: e.target.value })}
-              />
-            </Field>
-          </div>
-          {formError && (
-            <p className="md:col-span-2 xl:col-span-3 rounded-xl bg-red-50 px-3 py-2 text-[13px] text-red-700">
-              {formError}
-            </p>
-          )}
-          {formOk && (
-            <p className="md:col-span-2 xl:col-span-3 rounded-xl bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700">
-              {formOk}
-            </p>
-          )}
-          <div className="md:col-span-2 xl:col-span-3">
-            <PrimaryButton type="submit">Create employee account</PrimaryButton>
-          </div>
-        </form>
-      </Card>
-
+      {session?.person.role === 'hr' && <HrAddEmployeeForm />}
+      {formError && (
+        <p className="rounded-xl bg-red-50 px-3 py-2 text-[13px] text-red-700">{formError}</p>
+      )}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {people.map((p) => (
           <Card key={p.id}>
@@ -427,7 +412,7 @@ function AdminPeople() {
             ) : (
               <div className="mt-3 flex gap-2">
                 <SecondaryButton onClick={() => setSelectedId(p.id)}>View details</SecondaryButton>
-                {p.role !== 'admin' && (
+                {(p.role === 'tl' || p.role === 'user') && (
                   <SecondaryButton onClick={() => startEdit(p.id)}>Rename</SecondaryButton>
                 )}
               </div>

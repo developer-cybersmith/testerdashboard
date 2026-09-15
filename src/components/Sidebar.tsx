@@ -38,21 +38,25 @@ const leadNav = [
   { key: 'blockers' as const, label: 'Blockers', icon: ShieldAlert },
   { key: 'queries' as const, label: 'Query Session', icon: MessageSquareWarning },
   { key: 'leave' as const, label: 'Leave Requests', icon: ClipboardList },
+  { key: 'profile' as const, label: 'My Profile', icon: CircleUser },
+]
+
+const orgNav = [
+  { key: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
+  { key: 'projects' as const, label: 'All Projects', icon: FolderKanban },
+  { key: 'tracker' as const, label: 'Updates', icon: CalendarRange },
+  { key: 'requirements' as const, label: 'Requirements', icon: FileText },
+  { key: 'discussions' as const, label: 'Client Discussions', icon: MessagesSquare },
+  { key: 'lifecycle' as const, label: 'Start / Closure', icon: FolderKanban },
+  { key: 'blockers' as const, label: 'Blockers', icon: ShieldAlert },
+  { key: 'queries' as const, label: 'Query Session', icon: MessageSquareWarning },
+  { key: 'leave' as const, label: 'Leave Requests', icon: ClipboardList },
+  { key: 'people' as const, label: 'Employees', icon: Users },
 ]
 
 const navByRole: Record<Role, { key: NavKey; label: string; icon: typeof LayoutDashboard }[]> = {
-  admin: [
-    { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { key: 'projects', label: 'All Projects', icon: FolderKanban },
-    { key: 'tracker', label: 'Updates', icon: CalendarRange },
-    { key: 'requirements', label: 'Requirements', icon: FileText },
-    { key: 'discussions', label: 'Client Discussions', icon: MessagesSquare },
-    { key: 'lifecycle', label: 'Start / Closure', icon: FolderKanban },
-    { key: 'blockers', label: 'Blockers', icon: ShieldAlert },
-    { key: 'queries', label: 'Query Session', icon: MessageSquareWarning },
-    { key: 'leave', label: 'Leave Requests', icon: ClipboardList },
-    { key: 'people', label: 'Employees', icon: Users },
-  ],
+  admin: orgNav,
+  hr: orgNav,
   tl: leadNav,
   user: [
     { key: 'dashboard', label: 'My Work', icon: LayoutDashboard },
@@ -82,6 +86,8 @@ export function notificationNavKey(type: NotificationType, role?: Role): NavKey 
       return 'requirements'
     case 'lifecycle':
       return 'lifecycle'
+    case 'worked-day':
+      return role === 'user' ? 'tracker' : 'tracker'
     default:
       return 'projects'
   }

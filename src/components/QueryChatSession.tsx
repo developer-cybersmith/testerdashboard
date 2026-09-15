@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { Download, Paperclip, Search, Send, X } from 'lucide-react'
-import { personLabel, publicRoleLabel, useApp } from '../context/AppContext'
+import { isOrgAdmin, personLabel, publicRoleLabel, useApp } from '../context/AppContext'
 import type { QueryAttachment, QueryItem } from '../types'
 import { PrimaryButton, inputClass } from './ui'
 
@@ -118,7 +118,7 @@ export default function QueryChatSession() {
     return queries.filter((q) => {
       const project = projects.find((p) => p.id === q.projectId)
       if (!project) return false
-      if (session.person.role === 'admin') return true
+      if (isOrgAdmin(session.person.role)) return true
       return q.fromUserId === me || q.toPersonId === me
     })
   }, [queries, session, projects])

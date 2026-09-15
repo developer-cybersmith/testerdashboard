@@ -13,8 +13,13 @@ function DashboardShell() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [active, setActive] = useState<NavKey>('dashboard')
 
+  const needsLockedProfile =
+    !!session &&
+    (session.person.role === 'user' || session.person.role === 'tl') &&
+    (!session.person.avatarUploaded || Boolean(session.person.mustChangePassword))
+
   useEffect(() => {
-    if (session?.person.role === 'user' && !session.person.avatarUploaded) {
+    if (needsLockedProfile) {
       setActive('profile')
     } else {
       setActive('dashboard')
@@ -23,10 +28,10 @@ function DashboardShell() {
   }, [session?.person.id])
 
   useEffect(() => {
-    if (session?.person.role === 'user' && !session.person.avatarUploaded && active !== 'profile') {
+    if (needsLockedProfile && active !== 'profile') {
       setActive('profile')
     }
-  }, [active, session?.person.role, session?.person.avatarUploaded])
+  }, [active, needsLockedProfile])
 
   if (!session) return <LoginPage />
 
@@ -36,11 +41,13 @@ function DashboardShell() {
       ? 'Your allocated projects, daily progress, queries, and blockers.'
       : role === 'admin'
         ? 'Full org control — every Team Leader capability plus people and all projects.'
-        : 'Team Leader workspace — projects, trackers, requirements, discussions, and closure.'
+        : role === 'hr'
+          ? 'HR workspace — the same as Admin, plus adding employees.'
+          : 'Team Leader workspace — projects, trackers, requirements, discussions, and closure.'
 
   const titles: Partial<Record<NavKey, string>> = {
     dashboard: role === 'user' ? 'My Work' : 'Dashboard',
-    projects: role === 'user' ? 'My Projects' : role === 'admin' ? 'All Projects' : 'Projects',
+    projects: role === 'user' ? 'My Projects' : role === 'admin' || role === 'hr' ? 'All Projects' : 'Projects',
     tracker: role === 'user' ? 'Daily Update' : 'Updates',
     updates: 'Updates',
     queries: 'Query Session',
@@ -116,7 +123,7 @@ function DashboardShell() {
             <p className="mt-0.5 text-[13px] text-cs-muted md:text-[14px]">{subtitle}</p>
           </div>
 
-          {role === 'admin' && <AdminDashboard active={active} />}
+          {(role === 'admin' || role === 'hr') && <AdminDashboard active={active} />}
           {role === 'tl' && <TLDashboard active={active} />}
           {role === 'user' && <UserDashboard active={active} onNavigate={onNavigate} />}
         </main>

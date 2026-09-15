@@ -8,7 +8,7 @@ export function Card({
   className?: string
 }) {
   return (
-    <article className={`min-w-0 overflow-hidden rounded-[22px] bg-white p-5 shadow-card ${className}`}>
+    <article className={`min-w-0 rounded-[22px] bg-white p-5 shadow-card ${className.includes('overflow-') ? '' : 'overflow-hidden'} ${className}`}>
       {children}
     </article>
   )

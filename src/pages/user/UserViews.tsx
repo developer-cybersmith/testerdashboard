@@ -7,6 +7,8 @@ import { UserDashboardWidgets } from '../../components/dashboard/DashboardWidget
 import QueryChatSession from '../../components/QueryChatSession'
 import { LeaveRequestPanel } from '../../components/LeaveRequestPanel'
 import TesterProfile from '../../components/TesterProfile'
+import { WorkedDayRequestForm, LateMorningRequestForm } from '../../components/WorkedDayRequests'
+import { isAfterEveningWindow } from '../../context/AppContext'
 import type { NavKey } from '../../components/Sidebar'
 import type { BlockerSeverity, Project } from '../../types'
 import {
@@ -22,17 +24,36 @@ import {
 function TrackerBanner() {
   const {
     hasSubmittedToday,
+    todayMarkedWorked,
     trackerDueSoon,
     trackerOverdue,
     morningUpdateToday,
     eveningUpdateToday,
     currentUpdateSlot,
+    lateMorningGatewayOpen,
   } = useApp()
 
   if (hasSubmittedToday) {
     return (
       <div className="rounded-2xl border border-[#bbf7d0] bg-[#f0fdf4] px-4 py-3 text-[13px] text-[#15803d]">
-        Morning and evening updates are both submitted for today.
+        {todayMarkedWorked
+          ? 'Today is marked as worked.'
+          : 'Morning and evening updates are both submitted for today.'}
+      </div>
+    )
+  }
+
+  if (lateMorningGatewayOpen && !morningUpdateToday) {
+    return (
+      <div className="flex items-start gap-3 rounded-2xl border border-[#fde68a] bg-[#fffbeb] px-4 py-3 text-[13px] text-[#b45309]">
+        <Clock3 size={18} className="mt-0.5 shrink-0" />
+        <div>
+          <p className="font-semibold">Morning window missed — late gateway open until 11:00 AM</p>
+          <p>
+            Request Admin or HR to accept a late morning update. If only one slot is submitted
+            today, the calendar will show a yellow half day.
+          </p>
+        </div>
       </div>
     )
   }
@@ -78,7 +99,9 @@ function TrackerBanner() {
           <p>
             {!morningUpdateToday ? 'Morning (10:00–10:30 AM) was not submitted. ' : ''}
             {!eveningUpdateToday ? 'Evening (7:00–7:30 PM) was not submitted. ' : ''}
-            Testers can submit only inside those two windows.
+            {isAfterEveningWindow()
+              ? 'Send a request below so Admin or a Team Leader can mark today as worked.'
+              : 'Updates can be submitted only inside those two windows.'}
           </p>
         </div>
       </div>
@@ -167,6 +190,8 @@ export function UserDashboardHome({ onNavigate }: { onNavigate: (k: NavKey) => v
   return (
     <div className="space-y-4">
       <TrackerBanner />
+      <LateMorningRequestForm />
+      <WorkedDayRequestForm />
 
       <div className="rounded-[22px] bg-cs-forest p-5 text-white shadow-card">
         <p className="text-[13px] text-white/80">Your work progress</p>
@@ -288,6 +313,8 @@ export function UserTrackerView() {
   return (
     <div className="space-y-4">
       <TrackerBanner />
+      <LateMorningRequestForm />
+      <WorkedDayRequestForm />
       <div className="grid gap-4 xl:grid-cols-5">
         <Card className="xl:col-span-2">
           <SectionTitle title="Submit daily update" />
@@ -387,6 +414,7 @@ export function UserTrackerView() {
                       </p>
                       <span className="text-[11px] text-cs-muted">
                         {u.date}
+                        {u.late ? ' · Late' : ''}
                         {u.slot === 'morning'
                           ? ' · Morning'
                           : u.slot === 'evening'

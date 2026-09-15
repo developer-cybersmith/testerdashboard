@@ -61,3 +61,15 @@ export function isSafeAttachmentName(name: string) {
   if (/\.(html?|svg|js|exe|bat|cmd|msi|php|sh)$/i.test(cleaned)) return false
   return cleaned.length > 0 && cleaned.length <= 120
 }
+
+/** WSTG-ATHN-07: reject weak passwords (length + character classes). */
+export function isStrongPassword(raw: string) {
+  const value = raw.trim()
+  if (value.length < 8 || value.length > 128) return false
+  if (/\s/.test(value)) return false
+  return /[A-Z]/.test(value) && /[a-z]/.test(value) && /\d/.test(value) && /[^A-Za-z0-9]/.test(value)
+}
+
+export const PASSWORD_POLICY =
+  'Use 8–128 characters with upper, lower, number, and a symbol. Spaces are not allowed.'
+

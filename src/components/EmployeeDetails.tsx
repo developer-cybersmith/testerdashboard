@@ -8,7 +8,8 @@ import {
   Phone,
   Share2,
 } from 'lucide-react'
-import { PAID_LEAVE_MAX, personLabel, roleLabel, useApp } from '../context/AppContext'
+import { PAID_LEAVE_MAX, isOrgAdmin, personLabel, roleLabel, useApp } from '../context/AppContext'
+import { dayAttendanceMark } from '../attendance'
 import type { Person } from '../types'
 import { Badge, Card, Field, PrimaryButton, inputClass } from './ui'
 
@@ -36,16 +37,6 @@ function prettyDate(iso?: string) {
 
 function isoDate(year: number, month: number, day: number) {
   return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-}
-
-function eachDate(from: string, to: string) {
-  const start = new Date(`${from}T00:00:00`)
-  const end = new Date(`${to}T00:00:00`)
-  const days: string[] = []
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    days.push(isoDate(d.getFullYear(), d.getMonth(), d.getDate()))
-  }
-  return days
 }
 
 function startOfWeek(date: Date) {
@@ -106,7 +97,7 @@ export default function EmployeeDetails({ person }: { person: Person }) {
   const [cursor, setCursor] = useState(() => new Date(2026, 7, 1))
   const [code, setCode] = useState(person.employeeCode || '')
   const [codeMsg, setCodeMsg] = useState<string | null>(null)
-  const isAdmin = session?.person.role === 'admin'
+  const isAdmin = isOrgAdmin(session?.person.role)
   const score = person.performanceScore ?? 80
   const leave = person.leaveBalance || {
     allUsed: 0,
@@ -120,7 +111,6 @@ export default function EmployeeDetails({ person }: { person: Person }) {
   }
 
   const mine = updates.filter((u) => u.userId === person.id)
-  const myLeaves = leaveRequests.filter((l) => l.userId === person.id && l.status === 'approved')
 
   const year = cursor.getFullYear()
   const month = cursor.getMonth()
@@ -130,9 +120,6 @@ export default function EmployeeDetails({ person }: { person: Person }) {
   const cells = Array.from({ length: startPad + daysInMonth }, (_, i) =>
     i < startPad ? null : i - startPad + 1,
   )
-
-  const updateDates = new Set(mine.map((u) => u.date))
-  const leaveDates = new Set(myLeaves.flatMap((l) => eachDate(l.fromDate, l.toDate)))
 
   const weekHours = useMemo(() => {
     const start = startOfWeek(new Date(2026, 7, 18))
@@ -167,9 +154,7 @@ export default function EmployeeDetails({ person }: { person: Person }) {
 
   const dayMark = (day: number) => {
     const date = isoDate(year, month, day)
-    if (leaveDates.has(date)) return 'leave'
-    if (updateDates.has(date)) return 'present'
-    return 'none'
+    return dayAttendanceMark(updates, leaveRequests, person.id, date)
   }
 
   return (
@@ -253,10 +238,10 @@ export default function EmployeeDetails({ person }: { person: Person }) {
               </p>
             </div>
             <div className="min-w-0 py-2.5">
-              <p className="text-[12px] text-cs-muted">Address</p>
+              <p className="text-[12px] text-cs-muted">Location</p>
               <p className="mt-1 flex min-w-0 items-start gap-2 text-[13px] font-semibold text-cs-ink">
                 <MapPin size={14} className="mt-0.5 shrink-0 text-cs-forest" />
-                <span className="min-w-0 break-words">{person.address || '—'}</span>
+                <span className="min-w-0 break-words">{person.location || '—'}</span>
               </p>
             </div>
           </div>
@@ -361,8 +346,10 @@ export default function EmployeeDetails({ person }: { person: Person }) {
               const mark = dayMark(day)
               const tone =
                 mark === 'present'
-                  ? 'bg-[#d4edd9] text-cs-forest'
-                  : mark === 'leave'
+                  ? 'bg-[#14b8a6] text-white'
+                  : mark === 'half'
+                    ? 'bg-[#facc15] text-[#713f12]'
+                    : mark === 'leave'
                     ? 'bg-cs-forest text-white'
                     : 'text-cs-ink'
               return (
@@ -378,7 +365,10 @@ export default function EmployeeDetails({ person }: { person: Person }) {
           </div>
           <div className="mt-4 grid grid-cols-2 gap-2 text-[11px] text-cs-muted">
             <span className="inline-flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-[#d4edd9]" /> Present
+              <span className="h-2.5 w-2.5 rounded-full bg-[#14b8a6]" /> Present
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-full bg-[#facc15]" /> Half day
             </span>
             <span className="inline-flex items-center gap-1.5">
               <span className="h-2.5 w-2.5 rounded-sm bg-cs-forest" /> On Leave

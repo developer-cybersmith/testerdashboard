@@ -4,6 +4,11 @@ const rank: Record<Role, number> = {
   user: 1,
   tl: 2,
   admin: 3,
+  hr: 3,
+}
+
+export function isOrgAdmin(role?: Role) {
+  return role === 'admin' || role === 'hr'
 }
 
 export function canAct(actor: Role | undefined, allowed: Role[]) {

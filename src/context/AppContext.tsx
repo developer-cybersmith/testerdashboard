@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -34,9 +35,11 @@ import type {
   LeaveStatus,
   Person,
   Project,
+  ProjectRequirement,
   ProjectStatus,
   ProjectStatusAction,
   ProjectStatusRequest,
+  RequirementStatus,
   QueryAttachment,
   QueryItem,
   RequirementAction,
@@ -46,12 +49,34 @@ import type {
   ScopeItem,
   SharePointLink,
   VpnAccess,
+  WorkedDayRequest,
 } from '../types'
-import { canAct } from '../security/authorize'
-import { clampNumber, isSafeAttachmentName, sanitizeDataUrl, sanitizeImageDataUrl, sanitizeLines, sanitizeText, sanitizeUrl } from '../security/wstg'
+import { canAct, isOrgAdmin } from '../security/authorize'
+import {
+  clampNumber,
+  isSafeAttachmentName,
+  isStrongPassword,
+  PASSWORD_POLICY,
+  sanitizeDataUrl,
+  sanitizeImageDataUrl,
+  sanitizeLines,
+  sanitizeText,
+  sanitizeUrl,
+} from '../security/wstg'
+import { isLateMorningGateway, slotFromUpdate } from '../attendance'
 
-export const COMPANY_DOMAIN = 'cybersmith.secure.com'
+export { isOrgAdmin } from '../security/authorize'
+export { isLateMorningGateway, slotFromUpdate } from '../attendance'
 export const DEMO_PASSWORD = 'Secure@2026'
+export const COMPANY_DOMAIN = 'cybersmith.secure.com'
+export const OFFICE_LOCATIONS = [
+  'Gurugram',
+  'Mumbai',
+  'Bengaluru',
+  'Kolkata',
+  'Ahmedabad',
+  'Kochi',
+] as const
 
 const TRACKER_WINDOW_HOURS = 7
 export const PAID_LEAVE_MAX = 12
@@ -84,11 +109,75 @@ export function updateSlotLabel(slot?: UpdateSlot | null) {
   return 'Update'
 }
 
-function slotFromUpdate(update: DailyUpdate): UpdateSlot {
-  if (update.slot) return update.slot
-  const submitted = new Date(update.submittedAt)
-  const mins = submitted.getHours() * 60 + submitted.getMinutes()
-  return mins < 15 * 60 ? 'morning' : 'evening'
+export function isAfterEveningWindow(now = new Date()) {
+  return now.getHours() * 60 + now.getMinutes() > 19 * 60 + 30
+}
+
+export function sortBlockersByPriority<T extends { raisedByRole?: Role; severity: BlockerSeverity }>(
+  list: T[],
+) {
+  const rank: Record<BlockerSeverity, number> = {
+    critical: 0,
+    high: 1,
+    medium: 2,
+    low: 3,
+  }
+  return [...list].sort((a, b) => {
+    const aLead = a.raisedByRole === 'tl' ? 0 : 1
+    const bLead = b.raisedByRole === 'tl' ? 0 : 1
+    if (aLead !== bLead) return aLead - bLead
+    return (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9)
+  })
+}
+
+function notifyRecipients(
+  ids: string[],
+  push: (input: Omit<AppNotification, 'id' | 'createdAt' | 'read'>) => void,
+  payload: Omit<AppNotification, 'id' | 'createdAt' | 'read' | 'recipientId'>,
+) {
+  ids.forEach((recipientId) => {
+    push({ ...payload, recipientId })
+  })
+}
+
+function notifyAutoClosed(
+  project: Project,
+  push: (input: Omit<AppNotification, 'id' | 'createdAt' | 'read'>) => void,
+  leadIds: string[],
+) {
+  const recipients = new Set<string>([
+    project.tlId,
+    ...leadIds,
+    ...project.allocations.map((row) => row.userId),
+  ])
+  recipients.forEach((recipientId) => {
+    push({
+      recipientId,
+      type: 'lifecycle',
+      title: `${project.name} closed`,
+      message: 'All requirements are fulfilled. The project closed automatically.',
+      relatedId: project.id,
+    })
+  })
+}
+
+function applyAutoClose(project: Project): { project: Project; didClose: boolean } {
+  if (project.status === 'closed') return { project, didClose: false }
+  if (!project.requirements.length) return { project, didClose: false }
+  if (!project.requirements.every((item) => item.status === 'fulfilled')) {
+    return { project, didClose: false }
+  }
+  return {
+    project: {
+      ...project,
+      status: 'closed',
+      progress: 100,
+      closureDate: project.closureDate || localDateISO(),
+      closureRemark:
+        project.closureRemark || 'Closed automatically — all requirements fulfilled',
+    },
+    didClose: true,
+  }
 }
 
 function paidLeaveDaysCommitted(requests: LeaveRequest[], userId: string) {
@@ -121,7 +210,7 @@ interface AppContextValue {
     joinDate?: string
     gender?: string
     dateOfBirth?: string
-    address?: string
+    location?: string
   }) => string | null
   people: Person[]
   projects: Project[]
@@ -137,6 +226,7 @@ interface AppContextValue {
   trackerWindowHours: number
   hoursSinceLogin: number
   hasSubmittedToday: boolean
+  todayMarkedWorked: boolean
   trackerDueSoon: boolean
   trackerOverdue: boolean
   morningUpdateToday: boolean
@@ -170,7 +260,7 @@ interface AppContextValue {
     title: string
     description: string
     severity: BlockerSeverity
-  }) => void
+  }) => string | null
   updateBlockerStatus: (blockerId: string, status: Blocker['status']) => void
   addDiscussion: (input: Omit<ClientDiscussion, 'id'>) => void
   setProjectStatus: (
@@ -197,20 +287,19 @@ interface AppContextValue {
   projectStatusRequests: ProjectStatusRequest[]
   renamePerson: (personId: string, name: string, jobTitle?: string) => void
   updateEmployeeCode: (personId: string, employeeCode: string) => string | null
-  updateOwnProfile: (input: {
-    avatarDataUrl?: string
-    phone?: string
-    address?: string
-    gender?: string
-    dateOfBirth?: string
-  }) => string | null
+  updateOwnProfile: (input: { avatarDataUrl?: string }) => string | null
+  changePassword: (currentPassword: string, nextPassword: string) => string | null
   createProject: (input: {
     name: string
     client: string
     tlId: string
     allocateUserIds: string[]
     remarks: string
-    requirements?: string[]
+    startDate: string
+    closureDate: string
+    initialReportDate: string
+    closureReportDate: string
+    requirements?: Array<string | ProjectRequirement>
     sharepoint?: SharePointLink[]
     scope?: ScopeItem
     vpn?: VpnAccess[]
@@ -225,6 +314,10 @@ interface AppContextValue {
     vpn?: VpnAccess[]
     scopeCredits?: ScopeCredit[]
     remarks?: string
+    startDate?: string
+    closureDate?: string
+    initialReportDate?: string
+    closureReportDate?: string
   }) => void
   /** Admin can apply immediately; TL creates approval request */
   applyRequirementChange: (input: {
@@ -233,6 +326,11 @@ interface AppContextValue {
     index?: number
     newValue?: string
   }) => void
+  updateRequirementStatus: (
+    projectId: string,
+    requirementId: string,
+    status: RequirementStatus,
+  ) => void
   approveRequirementChange: (requestId: string) => void
   rejectRequirementChange: (requestId: string) => void
   requirementRequests: RequirementChangeRequest[]
@@ -249,6 +347,16 @@ interface AppContextValue {
     note: string,
   ) => void
   leaveStats: { approved: number; pending: number; thisMonth: number }
+  workedDayRequests: WorkedDayRequest[]
+  requestWorkedDay: (reason: string) => string | null
+  requestLateMorning: (input: {
+    reason: string
+    projectId: string
+    workPoints: string[]
+    hoursSpent: number
+  }) => string | null
+  decideWorkedDay: (requestId: string, decision: 'approve' | 'reject') => void
+  lateMorningGatewayOpen: boolean
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -259,6 +367,24 @@ function todayISO() {
 
 function uid(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`
+}
+
+function toRequirementItems(list?: Array<string | ProjectRequirement>): ProjectRequirement[] {
+  if (!list?.length) {
+    return [
+      { id: uid('req'), text: 'Daily tracker updates', status: 'incomplete' },
+      { id: uid('req'), text: 'Log blockers immediately', status: 'incomplete' },
+    ]
+  }
+  return list.map((item) =>
+    typeof item === 'string'
+      ? { id: uid('req'), text: sanitizeText(item, 400), status: 'incomplete' }
+      : {
+          id: item.id || uid('req'),
+          text: sanitizeText(item.text, 400),
+          status: item.status || 'incomplete',
+        },
+  )
 }
 
 function cleanAttachments(input?: QueryAttachment[]): QueryAttachment[] {
@@ -315,6 +441,10 @@ export function nextEmployeeCode(people: { employeeCode?: string }[]) {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<AppUserSession | null>(null)
   const [people, setPeople] = useState<Person[]>(initialPeople)
+  const orgAdminIds = useMemo(
+    () => people.filter((p) => p.role === 'admin' || p.role === 'hr').map((p) => p.id),
+    [people],
+  )
   const [projects, setProjects] = useState<Project[]>(initialProjects)
   const [updates, setUpdates] = useState<DailyUpdate[]>(initialUpdates)
   const [queries, setQueries] = useState<QueryItem[]>(initialQueries)
@@ -328,11 +458,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     initialRequirementRequests,
   )
   const [projectStatusRequests, setProjectStatusRequests] = useState<ProjectStatusRequest[]>([])
+  const [workedDayRequests, setWorkedDayRequests] = useState<WorkedDayRequest[]>([])
   const [nowTick, setNowTick] = useState(() => Date.now())
+  const [loginFails, setLoginFails] = useState(0)
+  const [loginLockedUntil, setLoginLockedUntil] = useState(0)
+  const lastActiveRef = useRef(Date.now())
 
   useEffect(() => {
     const t = window.setInterval(() => setNowTick(Date.now()), 60_000)
     return () => window.clearInterval(t)
+  }, [])
+
+  useEffect(() => {
+    const bump = () => {
+      lastActiveRef.current = Date.now()
+    }
+    window.addEventListener('pointerdown', bump)
+    window.addEventListener('keydown', bump)
+    return () => {
+      window.removeEventListener('pointerdown', bump)
+      window.removeEventListener('keydown', bump)
+    }
   }, [])
 
   const pushNotification = useCallback(
@@ -357,6 +503,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [people])
 
   const loginWithEmail = useCallback((email: string, password: string) => {
+    if (Date.now() < loginLockedUntil) {
+      const wait = Math.ceil((loginLockedUntil - Date.now()) / 1000)
+      return `Too many failed sign-ins. Try again in ${wait}s`
+    }
     const raw = email.trim().toLowerCase()
     if (raw.includes('@') && !raw.endsWith(`@${COMPANY_DOMAIN}`)) {
       return `Use a company email ending with @${COMPANY_DOMAIN}`
@@ -368,16 +518,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     const person = people.find((p) => p.email.toLowerCase() === cleanEmail)
     if (!person || (person.password || DEMO_PASSWORD) !== cleanPass) {
+      const nextFails = loginFails + 1
+      setLoginFails(nextFails)
+      if (nextFails >= 5) {
+        setLoginLockedUntil(Date.now() + 2 * 60 * 1000)
+        setLoginFails(0)
+        return 'Too many failed sign-ins. Try again in 120s'
+      }
       return 'Invalid email or password'
     }
+    setLoginFails(0)
+    setLoginLockedUntil(0)
+    lastActiveRef.current = Date.now()
     setSession({ person, loginAt: new Date().toISOString() })
     return null
-  }, [people])
+  }, [people, loginFails, loginLockedUntil])
 
   const registerEmployee: AppContextValue['registerEmployee'] = useCallback(
     (input) => {
-      if (!session || !canAct(session.person.role, ['admin'])) {
-        return 'Only Admin can register employees'
+      if (!session || !canAct(session.person.role, ['hr'])) {
+        return 'Only HR can register employees'
       }
       const email = normalizeCompanyEmail(input.email)
       if (!email) {
@@ -388,15 +548,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       const name = sanitizeText(input.name, 80)
       const password = input.password.trim()
-      if (!name || password.length < 8) {
-        return 'Name and a password of at least 8 characters are required'
-      }
+      if (!name) return 'Name is required'
+      if (!isStrongPassword(password)) return PASSWORD_POLICY
       const employeeCode = normalizeEmployeeCode(input.employeeCode || nextEmployeeCode(people))
       if (!employeeCode) return 'Employee ID is required (e.g. EMP-001)'
       if (people.some((p) => (p.employeeCode || '').toUpperCase() === employeeCode)) {
         return 'That employee ID is already in use'
       }
-      const role = input.role === 'admin' ? 'user' : input.role
+      const role = input.role === 'tl' ? 'tl' : 'user'
       const person: Person = {
         id: uid(role === 'tl' ? 'tl' : 'user'),
         name,
@@ -413,7 +572,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         gender: input.gender ? sanitizeText(input.gender, 20) : undefined,
         dateOfBirth: input.dateOfBirth,
         phone: input.phone ? sanitizeText(input.phone, 30) : undefined,
-        address: input.address ? sanitizeText(input.address, 200) : undefined,
+        location: input.location ? sanitizeText(input.location, 80) : undefined,
+        mustChangePassword: true,
         department: input.department ? sanitizeText(input.department, 80) : 'VAPT',
         leaveBalance: {
           allUsed: 0,
@@ -449,16 +609,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
       fresh.avatar !== session.person.avatar ||
       fresh.employeeCode !== session.person.employeeCode ||
       fresh.phone !== session.person.phone ||
-      fresh.address !== session.person.address ||
+      fresh.location !== session.person.location ||
       fresh.gender !== session.person.gender ||
       fresh.dateOfBirth !== session.person.dateOfBirth ||
-      fresh.avatarUploaded !== session.person.avatarUploaded
+      fresh.avatarUploaded !== session.person.avatarUploaded ||
+      fresh.mustChangePassword !== session.person.mustChangePassword
     ) {
       setSession((s) => (s ? { ...s, person: fresh } : s))
     }
   }, [people, session])
 
   const logout = useCallback(() => setSession(null), [])
+
+  useEffect(() => {
+    if (!session) return
+    const idle = Date.now() - lastActiveRef.current
+    const age = Date.now() - new Date(session.loginAt).getTime()
+    if (idle > 30 * 60 * 1000 || age > 8 * 60 * 60 * 1000) {
+      setSession(null)
+    }
+  }, [nowTick, session])
 
   const hoursSinceLogin = useMemo(() => {
     if (!session) return 0
@@ -475,7 +645,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const morningUpdateToday = todayUpdates.some((u) => slotFromUpdate(u) === 'morning')
   const eveningUpdateToday = todayUpdates.some((u) => slotFromUpdate(u) === 'evening')
   const currentSlot = currentUpdateSlot(new Date(nowTick))
-  const hasSubmittedToday = morningUpdateToday && eveningUpdateToday
+  const lateMorningGatewayOpen = isLateMorningGateway(new Date(nowTick))
+  const workedApprovedToday = Boolean(
+    session &&
+      workedDayRequests.some(
+        (req) =>
+          req.userId === session.person.id &&
+          req.date === localDateISO() &&
+          req.status === 'approved',
+      ),
+  )
+  const markedWorkedToday = todayUpdates.some((u) => u.markedWorked)
+  const hasSubmittedToday =
+    (morningUpdateToday && eveningUpdateToday) || workedApprovedToday || markedWorkedToday
+  const todayMarkedWorked = workedApprovedToday || markedWorkedToday
 
   const trackerDueSoon =
     !!session &&
@@ -517,7 +700,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const myNotifications = useMemo(() => {
     if (!session) return []
     const list =
-      session.person.role === 'admin'
+      session.person.role === 'admin' || session.person.role === 'hr'
         ? notifications
         : notifications.filter((n) => n.recipientId === session.person.id)
     return [...list].sort(
@@ -540,7 +723,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!session) return
     setNotifications((prev) =>
       prev.map((n) =>
-        session.person.role === 'admin' || n.recipientId === session.person.id
+        session.person.role === 'admin' ||
+        session.person.role === 'hr' ||
+        n.recipientId === session.person.id
           ? { ...n, read: true }
           : n,
       ),
@@ -583,7 +768,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setUpdates((prev) => [entry, ...prev])
       const recipients = new Set<string>([
         project.tlId,
-        'admin-1',
+        ...orgAdminIds,
         session.person.id,
         ...project.allocations.map((a) => a.userId),
       ])
@@ -601,7 +786,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       })
       return null
     },
-    [session, projects, updates, pushNotification],
+    [session, projects, updates, pushNotification, orgAdminIds],
   )
 
   const addQuery: AppContextValue['addQuery'] = useCallback(
@@ -663,6 +848,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const replyQuery = useCallback(
     (queryId: string, reply: string) => {
       if (!session) return
+      const cleanReply = sanitizeText(reply, 2000)
+      if (!cleanReply) return
       setQueries((prev) =>
         prev.map((q) => {
           if (q.id !== queryId) return q
@@ -670,7 +857,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             id: uid('qm'),
             senderId: session.person.id,
             senderName: session.person.name,
-            body: reply,
+            body: cleanReply,
             createdAt: new Date().toISOString(),
           }
           pushNotification({
@@ -683,7 +870,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return {
             ...q,
             status: 'answered' as const,
-            reply,
+            reply: cleanReply,
             messages: [...(q.messages || []), msg],
           }
         }),
@@ -745,42 +932,58 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const addBlocker: AppContextValue['addBlocker'] = useCallback(
     ({ projectId, title, description, severity }) => {
-      if (!session) return
+      if (!session || !canAct(session.person.role, ['user', 'tl'])) {
+        return 'Only testers and Team Leaders can raise blockers'
+      }
       const project = projects.find((p) => p.id === projectId)
-      if (!project) return
+      if (!project) return 'Choose a project'
+      const cleanTitle = sanitizeText(title, 160)
+      const cleanDescription = sanitizeText(description, 2000)
+      if (!cleanTitle || !cleanDescription) return 'Title and description are required'
       const item: Blocker = {
         id: uid('blk'),
         projectId,
         projectName: project.name,
         raisedById: session.person.id,
         raisedByName: session.person.name,
-        title,
-        description,
+        raisedByRole: session.person.role,
+        title: cleanTitle,
+        description: cleanDescription,
         severity,
         status: 'open',
         createdAt: new Date().toISOString(),
       }
       setBlockers((prev) => [item, ...prev])
-      const recipients = new Set([project.tlId, 'admin-1'])
+      const recipients = new Set<string>([...orgAdminIds])
+      if (session.person.role === 'tl') {
+        project.allocations.forEach((row) => recipients.add(row.userId))
+      } else {
+        recipients.add(project.tlId)
+      }
       recipients.forEach((recipientId) => {
         if (recipientId === session.person.id) return
         pushNotification({
           recipientId,
           type: severity === 'critical' ? 'critical-vuln' : 'blocker',
-          title: `${severity.toUpperCase()} blocker on ${project.name}`,
-          message: title,
+          title:
+            session.person.role === 'tl'
+              ? `Team Leader blocker on ${project.name}`
+              : `${severity.toUpperCase()} blocker on ${project.name}`,
+          message: cleanTitle,
           relatedId: item.id,
         })
       })
+      return null
     },
-    [session, projects, pushNotification],
+    [session, projects, pushNotification, orgAdminIds],
   )
 
   const updateBlockerStatus = useCallback(
     (blockerId: string, status: Blocker['status']) => {
+      if (!session || !canAct(session.person.role, ['admin', 'hr', 'tl'])) return
       setBlockers((prev) => {
         const target = prev.find((b) => b.id === blockerId)
-        if (target && status === 'resolved' && session) {
+        if (target && status === 'resolved') {
           pushNotification({
             recipientId: target.raisedById,
             type: 'blocker',
@@ -796,8 +999,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const addDiscussion: AppContextValue['addDiscussion'] = useCallback((input) => {
-    setDiscussions((prev) => [{ ...input, id: uid('cd') }, ...prev])
-  }, [])
+    if (!session || !canAct(session.person.role, ['admin', 'hr', 'tl'])) return
+    setDiscussions((prev) => [
+      {
+        ...input,
+        id: uid('cd'),
+        summary: sanitizeText(input.summary, 2000),
+        participants: sanitizeText(input.participants, 200),
+        outcome: input.outcome ? sanitizeText(input.outcome, 400) : input.outcome,
+        loggedBy: sanitizeText(input.loggedBy, 80),
+      },
+      ...prev,
+    ])
+  }, [session])
 
   const setProjectStatus = useCallback(
     (
@@ -810,7 +1024,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         closureRemark?: string
       },
     ) => {
-      if (!session || !canAct(session.person.role, ['admin'])) return
+      if (!session || !canAct(session.person.role, ['admin', 'hr'])) return
       const current = projects.find((p) => p.id === projectId)
       setProjects((prev) =>
         prev.map((p) =>
@@ -842,7 +1056,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!current) return
       const recipients = new Set<string>([
         current.tlId,
-        ...people.filter((p) => p.role === 'admin').map((p) => p.id),
+        ...people.filter((p) => p.role === 'admin' || p.role === 'hr').map((p) => p.id),
         ...current.allocations.map((a) => a.userId),
       ])
       recipients.delete(session.person.id)
@@ -898,7 +1112,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       setProjectStatusRequests((prev) => [item, ...prev])
       people
-        .filter((p) => p.role === 'admin')
+        .filter((p) => p.role === 'admin' || p.role === 'hr')
         .forEach((admin) => {
           pushNotification({
             recipientId: admin.id,
@@ -917,7 +1131,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const decideProjectStatusRequest = useCallback(
     (requestId: string, decision: 'approve' | 'reject', adminNote?: string) => {
-      if (!session || !canAct(session.person.role, ['admin'])) return
+      if (!session || !canAct(session.person.role, ['admin', 'hr'])) return
       const request = projectStatusRequests.find((r) => r.id === requestId)
       if (!request || request.status !== 'pending') return
       const note = adminNote ? sanitizeText(adminNote, 400) : ''
@@ -953,7 +1167,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const renamePerson = useCallback((personId: string, name: string, jobTitle?: string) => {
-    if (!session || !canAct(session.person.role, ['admin'])) return
+    if (!session || !canAct(session.person.role, ['admin', 'hr'])) return
     const trimmed = sanitizeText(name, 80)
     if (!trimmed) return
     const title = jobTitle ? sanitizeText(jobTitle, 80) || undefined : undefined
@@ -972,7 +1186,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const updateEmployeeCode = useCallback(
     (personId: string, employeeCode: string) => {
-      if (!session || !canAct(session.person.role, ['admin'])) {
+      if (!session || !canAct(session.person.role, ['admin', 'hr'])) {
         return 'Only Admin can change employee IDs'
       }
       const code = normalizeEmployeeCode(employeeCode)
@@ -988,15 +1202,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const updateOwnProfile = useCallback(
-    (input: {
-      avatarDataUrl?: string
-      phone?: string
-      address?: string
-      gender?: string
-      dateOfBirth?: string
-    }) => {
-      if (!session || session.person.role !== 'user') {
-        return 'Only testers can update this profile'
+    (input: { avatarDataUrl?: string }) => {
+      if (!session || !canAct(session.person.role, ['user', 'tl'])) {
+        return 'Only testers and Team Leaders can update this photo'
       }
       const current = people.find((p) => p.id === session.person.id)
       if (!current) return 'Profile not found'
@@ -1009,22 +1217,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
         avatarUploaded = true
       }
       if (!avatarUploaded) return 'Profile photo is required'
-      const phone = input.phone !== undefined ? sanitizeText(input.phone, 30) : current.phone
-      const address = input.address !== undefined ? sanitizeText(input.address, 200) : current.address
-      const gender = input.gender !== undefined ? sanitizeText(input.gender, 20) : current.gender
-      const dateOfBirth = input.dateOfBirth !== undefined ? input.dateOfBirth : current.dateOfBirth
       setPeople((prev) =>
-        prev.map((p) =>
-          p.id === current.id
-            ? { ...p, avatar, avatarUploaded, phone, address, gender, dateOfBirth }
-            : p,
-        ),
+        prev.map((p) => (p.id === current.id ? { ...p, avatar, avatarUploaded } : p)),
       )
       setProjects((prev) =>
         prev.map((project) => ({
           ...project,
           team: project.team.map((m) => (m.id === current.id ? { ...m, avatar } : m)),
         })),
+      )
+      return null
+    },
+    [session, people],
+  )
+
+  const changePassword = useCallback(
+    (currentPassword: string, nextPassword: string) => {
+      if (!session || !canAct(session.person.role, ['user', 'tl'])) {
+        return 'Only testers and Team Leaders can change password here'
+      }
+      const current = people.find((p) => p.id === session.person.id)
+      if (!current) return 'Profile not found'
+      if ((current.password || DEMO_PASSWORD) !== currentPassword.trim()) {
+        return 'Current password is incorrect'
+      }
+      const next = nextPassword.trim()
+      if (!isStrongPassword(next)) return PASSWORD_POLICY
+      if (next === currentPassword.trim()) return 'Choose a different password'
+      setPeople((prev) =>
+        prev.map((p) =>
+          p.id === current.id ? { ...p, password: next, mustChangePassword: false } : p,
+        ),
       )
       return null
     },
@@ -1044,19 +1267,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
       tlId,
       allocateUserIds,
       remarks,
+      startDate,
+      closureDate,
+      initialReportDate,
+      closureReportDate,
       requirements,
       sharepoint,
       scope,
       vpn,
       scopeCredits,
     }) => {
-      if (!session || !canAct(session.person.role, ['admin', 'tl'])) return
+      if (!session || !canAct(session.person.role, ['admin', 'hr', 'tl'])) return
       const resolvedTlId =
         session.person.role === 'tl' ? session.person.id : tlId
       const memberIds = Array.from(new Set([...allocateUserIds, resolvedTlId]))
       const allocatedPeople = people.filter((p) => memberIds.includes(p.id))
       const tl = people.find((p) => p.id === resolvedTlId)
       if (!tl) return
+      if (!startDate || !closureDate || !initialReportDate || !closureReportDate) return
       promoteToTl(resolvedTlId)
 
       const project: Project = {
@@ -1065,7 +1293,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         client: sanitizeText(client, 120),
         status: 'active',
         progress: 0,
-        startDate: todayISO(),
+        startDate: sanitizeText(startDate, 12),
+        closureDate: sanitizeText(closureDate, 12),
+        initialReportDate: sanitizeText(initialReportDate, 12),
+        closureReportDate: sanitizeText(closureReportDate, 12),
         tlId: resolvedTlId,
         allocations: memberIds.map((userId) => ({
           userId,
@@ -1095,9 +1326,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         vpn: vpn?.length ? vpn : [],
         scopeCredits: scopeCredits?.length ? scopeCredits : [],
         remarks: sanitizeText(remarks, 2000),
-        requirements: requirements?.length
-          ? requirements
-          : ['Daily tracker updates', 'Log blockers immediately'],
+        requirements: toRequirementItems(requirements),
         taskTrack: { todo: 6, inProgress: 0, done: 0 },
       }
       setProjects((prev) => [project, ...prev])
@@ -1128,6 +1357,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       vpn,
       scopeCredits,
       remarks,
+      startDate,
+      closureDate,
+      initialReportDate,
+      closureReportDate,
     }) => {
       const memberIds = Array.from(new Set([...allocateUserIds, tlId]))
       const tl = people.find((p) => p.id === tlId)
@@ -1167,6 +1400,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 vpn: vpn ?? p.vpn,
                 scopeCredits: scopeCredits ?? p.scopeCredits,
                 remarks: remarks ?? p.remarks,
+                startDate: startDate ? sanitizeText(startDate, 12) : p.startDate,
+                closureDate: closureDate ? sanitizeText(closureDate, 12) : p.closureDate,
+                initialReportDate: initialReportDate
+                  ? sanitizeText(initialReportDate, 12)
+                  : p.initialReportDate,
+                closureReportDate: closureReportDate
+                  ? sanitizeText(closureReportDate, 12)
+                  : p.closureReportDate,
               }
             : p,
         ),
@@ -1181,29 +1422,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const project = projects.find((p) => p.id === projectId)
       if (!project) return
 
-      let proposed = [...project.requirements]
+      let proposed = project.requirements.map((item) => ({ ...item }))
       let oldValue: string | undefined
       if (action === 'add' && newValue?.trim()) {
-        proposed = [...proposed, newValue.trim()]
-      } else if (action === 'edit' && index !== undefined && newValue?.trim()) {
-        oldValue = proposed[index]
-        proposed[index] = newValue.trim()
-      } else if (action === 'delete' && index !== undefined) {
-        oldValue = proposed[index]
+        proposed = [
+          ...proposed,
+          {
+            id: uid('req'),
+            text: sanitizeText(newValue, 400),
+            status: 'incomplete' as const,
+          },
+        ]
+      } else if (action === 'edit' && index !== undefined && newValue?.trim() && proposed[index]) {
+        oldValue = proposed[index].text
+        proposed[index] = { ...proposed[index], text: sanitizeText(newValue, 400) }
+      } else if (action === 'delete' && index !== undefined && proposed[index]) {
+        oldValue = proposed[index].text
         proposed = proposed.filter((_, i) => i !== index)
       } else {
         return
       }
 
       // Admin applies immediately
-      if (session.person.role === 'admin') {
-        setProjects((prev) =>
-          prev.map((p) => (p.id === projectId ? { ...p, requirements: proposed } : p)),
-        )
+      if (isOrgAdmin(session.person.role)) {
+        const next = applyAutoClose({ ...project, requirements: proposed })
+        setProjects((prev) => prev.map((p) => (p.id === projectId ? next.project : p)))
+        if (next.didClose) notifyAutoClosed(next.project, pushNotification, orgAdminIds)
         return
       }
 
-      // TL needs admin approval
+      // TL needs Admin or HR approval
       const req: RequirementChangeRequest = {
         id: uid('reqch'),
         projectId,
@@ -1219,15 +1467,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
         createdAt: new Date().toISOString(),
       }
       setRequirementRequests((prev) => [req, ...prev])
-      pushNotification({
-        recipientId: 'admin-1',
+      notifyRecipients(orgAdminIds, pushNotification, {
         type: 'requirement',
         title: `Requirement ${action} approval needed`,
         message: `${session.person.name} on ${project.name}`,
         relatedId: req.id,
       })
     },
-    [session, projects, pushNotification],
+    [session, projects, pushNotification, orgAdminIds],
+  )
+
+  const updateRequirementStatus = useCallback(
+    (projectId: string, requirementId: string, status: RequirementStatus) => {
+      if (!session || !canAct(session.person.role, ['admin', 'hr', 'tl'])) return
+      const current = projects.find((project) => project.id === projectId)
+      if (!current) return
+      const next = applyAutoClose({
+        ...current,
+        requirements: current.requirements.map((item) =>
+          item.id === requirementId ? { ...item, status } : item,
+        ),
+      })
+      setProjects((prev) => prev.map((project) => (project.id === projectId ? next.project : project)))
+      if (next.didClose) notifyAutoClosed(next.project, pushNotification, orgAdminIds)
+    },
+    [session, projects, pushNotification, orgAdminIds],
   )
 
   const approveRequirementChange = useCallback(
@@ -1236,11 +1500,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const target = prev.find((r) => r.id === requestId)
         if (target && target.status === 'pending') {
           setProjects((ps) =>
-            ps.map((p) =>
-              p.id === target.projectId
-                ? { ...p, requirements: target.proposedRequirements }
-                : p,
-            ),
+            ps.map((p) => {
+              if (p.id !== target.projectId) return p
+              const next = applyAutoClose({
+                ...p,
+                requirements: target.proposedRequirements,
+              })
+              if (next.didClose) notifyAutoClosed(next.project, pushNotification, orgAdminIds)
+              return next.project
+            }),
           )
           pushNotification({
             recipientId: target.requestedById,
@@ -1281,7 +1549,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const submitLeaveRequest: AppContextValue['submitLeaveRequest'] = useCallback(
     ({ fromDate, toDate, reason, kind }) => {
-      if (!session || session.person.role !== 'user') return 'Only testers can request leave'
+      if (!session || (session.person.role !== 'user' && session.person.role !== 'tl')) {
+        return 'Only testers and Team Leaders can request leave'
+      }
       const days = leaveDayCount(fromDate, toDate)
       if (!days) return 'Choose a valid date range'
       const cleanedReason = sanitizeText(reason, 1000)
@@ -1295,10 +1565,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
             : `Only ${remaining} paid leave day${remaining === 1 ? '' : 's'} remaining`
         }
       }
+      const isTlSelf = session.person.role === 'tl'
       const myProj = projects.find((p) =>
-        p.allocations.some((a) => a.userId === session.person.id),
+        isTlSelf
+          ? p.tlId === session.person.id
+          : p.allocations.some((a) => a.userId === session.person.id),
       )
-      const tlId = myProj?.tlId || 'tl-1'
+      const tlId = isTlSelf ? session.person.id : myProj?.tlId || 'tl-1'
       const leave: LeaveRequest = {
         id: uid('lv'),
         userId: session.person.id,
@@ -1308,28 +1581,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
         toDate: sanitizeText(toDate, 12),
         reason: cleanedReason,
         kind: leaveKind,
-        status: 'pending-tl',
+        status: isTlSelf ? 'pending-admin' : 'pending-tl',
         tlId,
         createdAt: new Date().toISOString(),
       }
       setLeaveRequests((prev) => [leave, ...prev])
-      pushNotification({
-        recipientId: tlId,
-        type: 'leave',
-        title: 'New leave request',
-        message: `${session.person.name}: ${fromDate} → ${toDate}`,
-        relatedId: leave.id,
-      })
-      pushNotification({
-        recipientId: session.person.id,
-        type: 'leave',
-        title: 'Leave request submitted',
-        message: `Waiting for Team Leader review: ${fromDate} → ${toDate}`,
-        relatedId: leave.id,
-      })
+      if (isTlSelf) {
+        notifyRecipients(orgAdminIds, pushNotification, {
+          type: 'leave',
+          title: 'Team Leader leave request',
+          message: `${session.person.name}: ${fromDate} → ${toDate}`,
+          relatedId: leave.id,
+        })
+        pushNotification({
+          recipientId: session.person.id,
+          type: 'leave',
+          title: 'Leave request submitted',
+          message: `Waiting for Admin or HR approval: ${fromDate} → ${toDate}`,
+          relatedId: leave.id,
+        })
+      } else {
+        pushNotification({
+          recipientId: tlId,
+          type: 'leave',
+          title: 'New leave request',
+          message: `${session.person.name}: ${fromDate} → ${toDate}`,
+          relatedId: leave.id,
+        })
+        pushNotification({
+          recipientId: session.person.id,
+          type: 'leave',
+          title: 'Leave request submitted',
+          message: `Waiting for Team Leader review: ${fromDate} → ${toDate}`,
+          relatedId: leave.id,
+        })
+      }
       return null
     },
-    [session, projects, leaveRequests, pushNotification],
+    [session, projects, leaveRequests, pushNotification, orgAdminIds],
   )
 
   const decideLeaveRequest = useCallback(
@@ -1338,9 +1627,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const cleanedNote = sanitizeText(note, 1000)
       if (decision === 'approve' && !cleanedNote) return
       const target = leaveRequests.find((lv) => lv.id === leaveId)
+      const actorIsOrgAdmin = isOrgAdmin(session.person.role)
       if (
         decision === 'approve' &&
-        session.person.role === 'admin' &&
+        actorIsOrgAdmin &&
         target?.status === 'pending-admin' &&
         (target.kind || 'other') === 'paid'
       ) {
@@ -1373,13 +1663,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setLeaveRequests((prev) =>
         prev.map((lv) => {
           if (lv.id !== leaveId) return lv
+          if (session.person.role === 'tl' && lv.userId === session.person.id) return lv
           if (decision === 'reject') {
             if (
               !(
                 (session.person.role === 'tl' &&
                   lv.tlId === session.person.id &&
                   lv.status === 'pending-tl') ||
-                (session.person.role === 'admin' &&
+                (actorIsOrgAdmin &&
                   (lv.status === 'pending-admin' || lv.status === 'pending-tl'))
               )
             ) {
@@ -1404,10 +1695,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
             lv.tlId === session.person.id &&
             lv.status === 'pending-tl'
           ) {
-            pushNotification({
-              recipientId: 'admin-1',
+            notifyRecipients(orgAdminIds, pushNotification, {
               type: 'leave',
-              title: 'Leave pending Admin approval',
+              title: 'Leave pending Admin or HR approval',
               message: `${lv.userName}: ${lv.fromDate} → ${lv.toDate}`,
               relatedId: leaveId,
             })
@@ -1415,7 +1705,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               recipientId: lv.userId,
               type: 'leave',
               title: 'Leave approved by Team Leader',
-              message: 'Waiting for Admin final approval',
+              message: 'Waiting for Admin or HR final approval',
               relatedId: leaveId,
             })
             return {
@@ -1425,7 +1715,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               decidedBy: session.person.id,
             }
           }
-          if (session.person.role === 'admin' && lv.status === 'pending-admin') {
+          if (actorIsOrgAdmin && lv.status === 'pending-admin') {
             if ((lv.kind || 'other') === 'paid') {
               const days = leaveDayCount(lv.fromDate, lv.toDate)
               const used = paidLeaveDaysCommitted(
@@ -1441,13 +1731,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
               message: cleanedNote || `${lv.fromDate} → ${lv.toDate}`,
               relatedId: leaveId,
             })
-            pushNotification({
-              recipientId: lv.tlId,
-              type: 'leave',
-              title: 'Leave fully approved by Admin',
-              message: `${lv.userName}: ${lv.fromDate} → ${lv.toDate}`,
-              relatedId: leaveId,
-            })
+            if (lv.tlId !== lv.userId) {
+              pushNotification({
+                recipientId: lv.tlId,
+                type: 'leave',
+                title: 'Leave fully approved',
+                message: `${lv.userName}: ${lv.fromDate} → ${lv.toDate}`,
+                relatedId: leaveId,
+              })
+            }
             return {
               ...lv,
               status: 'approved' as LeaveStatus,
@@ -1459,7 +1751,196 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }),
       )
     },
-    [session, leaveRequests, pushNotification],
+    [session, leaveRequests, pushNotification, orgAdminIds],
+  )
+
+  const requestWorkedDay = useCallback(
+    (reason: string) => {
+      if (!session || session.person.role !== 'user') {
+        return 'Only testers can request a worked-day mark'
+      }
+      if (!isAfterEveningWindow()) {
+        return 'You can send this request only after 7:30 PM'
+      }
+      const today = localDateISO()
+      const todayMine = updates.filter((u) => u.userId === session.person.id && u.date === today)
+      const alreadyDone =
+        (todayMine.some((u) => slotFromUpdate(u) === 'morning') &&
+          todayMine.some((u) => slotFromUpdate(u) === 'evening')) ||
+        todayMine.some((u) => u.markedWorked) ||
+        workedDayRequests.some(
+          (req) => req.userId === session.person.id && req.date === today && req.status === 'approved',
+        )
+      if (alreadyDone) return 'Today is already marked as worked'
+      if (
+        workedDayRequests.some(
+          (req) =>
+            req.userId === session.person.id &&
+            req.date === today &&
+            req.status === 'pending' &&
+            (req.kind || 'worked-day') === 'worked-day',
+        )
+      ) {
+        return 'A request is already waiting for approval'
+      }
+      const cleaned = sanitizeText(reason, 1000)
+      if (!cleaned) return 'Add a short reason for the missed window'
+      const item: WorkedDayRequest = {
+        id: uid('wd'),
+        userId: session.person.id,
+        userName: session.person.name,
+        date: today,
+        reason: cleaned,
+        kind: 'worked-day',
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      }
+      setWorkedDayRequests((prev) => [item, ...prev])
+      people
+        .filter((p) => p.role === 'admin' || p.role === 'hr' || p.role === 'tl')
+        .forEach((p) => {
+          pushNotification({
+            recipientId: p.id,
+            type: 'worked-day',
+            title: 'Worked-day request',
+            message: `${session.person.name} asked to mark ${today} as worked`,
+            relatedId: item.id,
+          })
+        })
+      return null
+    },
+    [session, updates, workedDayRequests, people, pushNotification],
+  )
+
+  const requestLateMorning: AppContextValue['requestLateMorning'] = useCallback(
+    ({ reason, projectId, workPoints, hoursSpent }) => {
+      if (!session || session.person.role !== 'user') {
+        return 'Only testers can request a late morning update'
+      }
+      if (!isLateMorningGateway()) {
+        return 'Late requests are only accepted from 10:30–11:00 AM'
+      }
+      const today = localDateISO()
+      const todayMine = updates.filter((u) => u.userId === session.person.id && u.date === today)
+      if (todayMine.some((u) => slotFromUpdate(u) === 'morning')) {
+        return 'Morning update is already submitted'
+      }
+      if (
+        workedDayRequests.some(
+          (req) =>
+            req.userId === session.person.id &&
+            req.date === today &&
+            req.status === 'pending' &&
+            req.kind === 'late-morning',
+        )
+      ) {
+        return 'A late request is already waiting for Admin approval'
+      }
+      const project = projects.find((p) => p.id === projectId)
+      const allowed = project?.allocations.some((a) => a.userId === session.person.id)
+      if (!project || !allowed) return 'Choose a project allocated to you'
+      const points = sanitizeLines(workPoints, 20, 400)
+      if (points.length === 0) return 'Add at least one work point'
+      const cleaned = sanitizeText(reason, 1000)
+      if (!cleaned) return 'Add a short reason for being late'
+      const item: WorkedDayRequest = {
+        id: uid('late'),
+        userId: session.person.id,
+        userName: session.person.name,
+        date: today,
+        reason: cleaned,
+        kind: 'late-morning',
+        projectId: project.id,
+        workPoints: points,
+        hoursSpent: clampNumber(hoursSpent, 0, 24),
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      }
+      setWorkedDayRequests((prev) => [item, ...prev])
+      people
+        .filter((p) => p.role === 'admin' || p.role === 'hr')
+        .forEach((p) => {
+          pushNotification({
+            recipientId: p.id,
+            type: 'worked-day',
+            title: 'Late morning request',
+            message: `${session.person.name} missed 10:00–10:30 AM and asked Admin to accept a late update`,
+            relatedId: item.id,
+          })
+        })
+      return null
+    },
+    [session, updates, workedDayRequests, projects, people, pushNotification],
+  )
+
+  const decideWorkedDay = useCallback(
+    (requestId: string, decision: 'approve' | 'reject') => {
+      const target = workedDayRequests.find((req) => req.id === requestId)
+      if (!session || !target || target.status !== 'pending') return
+      const isLate = target.kind === 'late-morning'
+      if (isLate) {
+        if (!canAct(session.person.role, ['admin', 'hr'])) return
+      } else if (!canAct(session.person.role, ['admin', 'hr', 'tl'])) {
+        return
+      }
+      setWorkedDayRequests((prev) =>
+        prev.map((req) =>
+          req.id === requestId
+            ? {
+                ...req,
+                status: decision === 'approve' ? 'approved' : 'rejected',
+                decidedBy: session.person.id,
+                decidedByName: session.person.name,
+              }
+            : req,
+        ),
+      )
+      if (decision === 'approve') {
+        const project =
+          projects.find((p) => p.id === target.projectId) ||
+          projects.find((p) => p.allocations.some((row) => row.userId === target.userId))
+        const points = target.workPoints?.length
+          ? target.workPoints
+          : [`Day marked as worked — ${target.reason}`]
+        setUpdates((prev) => [
+          {
+            id: uid('upd'),
+            projectId: project?.id || '',
+            userId: target.userId,
+            userName: target.userName,
+            date: target.date,
+            submittedAt: new Date().toISOString(),
+            workDone: isLate ? points.join('\n') : `Day marked as worked by ${session.person.name}. ${target.reason}`,
+            workPoints: points,
+            hoursSpent: isLate ? clampNumber(target.hoursSpent || 0, 0, 24) : 0,
+            slot: isLate ? 'morning' : 'evening',
+            markedWorked: !isLate,
+            late: isLate,
+          },
+          ...prev,
+        ])
+      }
+      pushNotification({
+        recipientId: target.userId,
+        type: 'worked-day',
+        title: isLate
+          ? decision === 'approve'
+            ? 'Late morning update accepted'
+            : 'Late morning request declined'
+          : decision === 'approve'
+            ? 'Day marked as worked'
+            : 'Worked-day request declined',
+        message: isLate
+          ? decision === 'approve'
+            ? `${session.person.name} accepted your late morning update for ${target.date}`
+            : `${session.person.name} declined the late request for ${target.date}`
+          : decision === 'approve'
+            ? `${session.person.name} marked ${target.date} as worked`
+            : `${session.person.name} declined the request for ${target.date}`,
+        relatedId: requestId,
+      })
+    },
+    [session, workedDayRequests, projects, pushNotification],
   )
 
   const leaveStats = useMemo(() => {
@@ -1495,11 +1976,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     trackerWindowHours: TRACKER_WINDOW_HOURS,
     hoursSinceLogin,
     hasSubmittedToday,
+    todayMarkedWorked,
     trackerDueSoon,
     trackerOverdue,
     morningUpdateToday,
     eveningUpdateToday,
     currentUpdateSlot: currentSlot,
+    lateMorningGatewayOpen,
     myProjects,
     activeProjects,
     openBlockers,
@@ -1522,9 +2005,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     renamePerson,
     updateEmployeeCode,
     updateOwnProfile,
+    changePassword,
     createProject,
     updateProjectAssignment,
     applyRequirementChange,
+    updateRequirementStatus,
     approveRequirementChange,
     rejectRequirementChange,
     requirementRequests,
@@ -1532,6 +2017,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     submitLeaveRequest,
     decideLeaveRequest,
     leaveStats,
+    workedDayRequests,
+    requestWorkedDay,
+    requestLateMorning,
+    decideWorkedDay,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
@@ -1547,6 +2036,8 @@ export function roleLabel(role: Role) {
   switch (role) {
     case 'admin':
       return 'Admin'
+    case 'hr':
+      return 'HR'
     case 'tl':
       return 'Team Leader'
     case 'user':

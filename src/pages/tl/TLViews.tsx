@@ -1,6 +1,8 @@
 import { useMemo, useState, type FormEvent } from 'react'
-import { useApp, personLabel } from '../../context/AppContext'
+import { isOrgAdmin, personLabel, roleLabel, sortBlockersByPriority, useApp } from '../../context/AppContext'
+import TesterProfile from '../../components/TesterProfile'
 import type { NavKey } from '../../components/Sidebar'
+import { REQUIREMENT_STATUS_OPTIONS, type BlockerSeverity, type RequirementStatus } from '../../types'
 import { LeadDashboardWidgets } from '../../components/dashboard/DashboardWidgets'
 import FilterSelect from '../../components/FilterSelect'
 import QueryChatSession from '../../components/QueryChatSession'
@@ -126,10 +128,14 @@ export function TLOverview() {
 
 export function TLActiveProjects() {
   const { activeProjects, createProject, people, session, updateProjectAssignment } = useApp()
-  const groupMembers = people.filter((p) => p.role !== 'admin')
-  const isAdmin = session?.person.role === 'admin'
+  const groupMembers = people.filter((p) => p.role === 'tl' || p.role === 'user')
+  const isAdmin = isOrgAdmin(session?.person.role)
   const [name, setName] = useState('')
   const [client, setClient] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [closureDate, setClosureDate] = useState('')
+  const [initialReportDate, setInitialReportDate] = useState('')
+  const [closureReportDate, setClosureReportDate] = useState('')
   const [tlId, setTlId] = useState('')
   const [selectedUsers, setSelectedUsers] = useState<string[]>([])
   const [access, setAccess] = useState<ProjectAccessValues>(emptyProjectAccess())
@@ -138,6 +144,10 @@ export function TLActiveProjects() {
   const [editTlId, setEditTlId] = useState('')
   const [editUsers, setEditUsers] = useState<string[]>([])
   const [editAccess, setEditAccess] = useState<ProjectAccessValues>(emptyProjectAccess())
+  const [editStartDate, setEditStartDate] = useState('')
+  const [editClosureDate, setEditClosureDate] = useState('')
+  const [editInitialReportDate, setEditInitialReportDate] = useState('')
+  const [editClosureReportDate, setEditClosureReportDate] = useState('')
   const [viewProjectId, setViewProjectId] = useState<string | null>(null)
 
   const selectedPeople = groupMembers.filter((p) => selectedUsers.includes(p.id))
@@ -162,21 +172,30 @@ export function TLActiveProjects() {
   const submit = (e: FormEvent) => {
     e.preventDefault()
     if (!name.trim() || !client.trim() || selectedUsers.length === 0) return
+    if (!startDate || !closureDate || !initialReportDate || !closureReportDate) return
     if (isAdmin && !tlId) return
     if (!isProjectAccessComplete(access)) return
     const payload = toProjectAccessPayload(
       access,
-      `${session?.person.name || 'Admin'} (${isAdmin ? 'Admin' : 'TL'})`,
+      `${session?.person.name || 'Admin'} (${session ? roleLabel(session.person.role) : 'Admin'})`,
     )
     createProject({
       name: name.trim(),
       client: client.trim(),
       tlId: isAdmin ? tlId : session?.person.id || '',
       allocateUserIds: selectedUsers,
+      startDate,
+      closureDate,
+      initialReportDate,
+      closureReportDate,
       ...payload,
     })
     setName('')
     setClient('')
+    setStartDate('')
+    setClosureDate('')
+    setInitialReportDate('')
+    setClosureReportDate('')
     setTlId('')
     setSelectedUsers([])
     setAccess(emptyProjectAccess())
@@ -190,6 +209,10 @@ export function TLActiveProjects() {
     setEditTlId(p.tlId)
     setEditUsers(Array.from(new Set([...p.allocations.map((a) => a.userId), p.tlId])))
     setEditAccess(fromProjectAccess(p))
+    setEditStartDate(p.startDate || '')
+    setEditClosureDate(p.closureDate || '')
+    setEditInitialReportDate(p.initialReportDate || '')
+    setEditClosureReportDate(p.closureReportDate || '')
   }
 
   const saveAssign = () => {
@@ -197,7 +220,7 @@ export function TLActiveProjects() {
     if (!isProjectAccessComplete(editAccess)) return
     const payload = toProjectAccessPayload(
       editAccess,
-      `${session?.person.name || 'Admin'} (${isAdmin ? 'Admin' : 'TL'})`,
+      `${session?.person.name || 'Admin'} (${session ? roleLabel(session.person.role) : 'Admin'})`,
     )
     updateProjectAssignment({
       projectId: assignProjectId,
@@ -206,6 +229,10 @@ export function TLActiveProjects() {
         ? editUsers
         : activeProjects.find((p) => p.id === assignProjectId)?.allocations.map((a) => a.userId) ||
           editUsers,
+      startDate: editStartDate,
+      closureDate: editClosureDate,
+      initialReportDate: editInitialReportDate,
+      closureReportDate: editClosureReportDate,
       ...payload,
     })
     setAssignProjectId(null)
@@ -228,6 +255,42 @@ export function TLActiveProjects() {
             </Field>
             <Field label="Client">
               <input className={inputClass} value={client} onChange={(e) => setClient(e.target.value)} required />
+            </Field>
+            <Field label="Start date">
+              <input
+                className={inputClass}
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                required
+              />
+            </Field>
+            <Field label="Closure date">
+              <input
+                className={inputClass}
+                type="date"
+                value={closureDate}
+                onChange={(e) => setClosureDate(e.target.value)}
+                required
+              />
+            </Field>
+            <Field label="Initial report submission">
+              <input
+                className={inputClass}
+                type="date"
+                value={initialReportDate}
+                onChange={(e) => setInitialReportDate(e.target.value)}
+                required
+              />
+            </Field>
+            <Field label="Closure report date">
+              <input
+                className={inputClass}
+                type="date"
+                value={closureReportDate}
+                onChange={(e) => setClosureReportDate(e.target.value)}
+                required
+              />
             </Field>
             <div className="md:col-span-2">
               <Field label="Allocate testers in the group">
@@ -323,6 +386,38 @@ export function TLActiveProjects() {
                 </Field>
               </>
             )}
+            <Field label="Start date">
+              <input
+                className={inputClass}
+                type="date"
+                value={editStartDate}
+                onChange={(e) => setEditStartDate(e.target.value)}
+              />
+            </Field>
+            <Field label="Closure date">
+              <input
+                className={inputClass}
+                type="date"
+                value={editClosureDate}
+                onChange={(e) => setEditClosureDate(e.target.value)}
+              />
+            </Field>
+            <Field label="Initial report submission">
+              <input
+                className={inputClass}
+                type="date"
+                value={editInitialReportDate}
+                onChange={(e) => setEditInitialReportDate(e.target.value)}
+              />
+            </Field>
+            <Field label="Closure report date">
+              <input
+                className={inputClass}
+                type="date"
+                value={editClosureReportDate}
+                onChange={(e) => setEditClosureReportDate(e.target.value)}
+              />
+            </Field>
             <ProjectAccessFields values={editAccess} onChange={setEditAccess} />
             <div className="flex gap-2 md:col-span-2">
               <PrimaryButton onClick={saveAssign}>Save updates</PrimaryButton>
@@ -342,11 +437,18 @@ export function TLActiveProjects() {
                 <div>
                   <h4 className="text-[15px] font-bold text-cs-ink">{p.name}</h4>
                   <p className="text-[12px] text-cs-muted">{p.client}</p>
+                  <p className="mt-1 text-[11px] text-cs-muted">
+                    Start {p.startDate}
+                    {p.closureDate ? ` · Closure ${p.closureDate}` : ''}
+                  </p>
+                  <p className="text-[11px] text-cs-muted">
+                    Initial report {p.initialReportDate || '—'} · Closure report{' '}
+                    {p.closureReportDate || '—'}
+                  </p>
                 </div>
                 <Badge tone="green">active</Badge>
               </div>
-              <p className="mb-1 text-[12px] text-cs-muted">TL: {tlName}</p>
-              <p className="mb-2 text-[12px] text-cs-muted">Started {p.startDate}</p>
+              <p className="mb-2 text-[12px] text-cs-muted">TL: {tlName}</p>
               <div className="mb-3 h-2 rounded-full bg-gray-100">
                 <div className="h-2 rounded-full bg-cs-mint" style={{ width: `${p.progress}%` }} />
               </div>
@@ -482,6 +584,7 @@ export function TLRequirementsView() {
     myProjects,
     session,
     applyRequirementChange,
+    updateRequirementStatus,
     requirementRequests,
     approveRequirementChange,
     rejectRequirementChange,
@@ -489,7 +592,7 @@ export function TLRequirementsView() {
   const projects = myProjects.filter((p) => p.status !== 'closed')
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [editing, setEditing] = useState<Record<string, string>>({})
-  const isAdmin = session?.person.role === 'admin'
+  const isAdmin = isOrgAdmin(session?.person.role)
   const isTl = session?.person.role === 'tl'
 
   const addRequirement = (projectId: string) => {
@@ -499,8 +602,8 @@ export function TLRequirementsView() {
     setDrafts((prev) => ({ ...prev, [projectId]: '' }))
   }
 
-  const saveEdit = (projectId: string, index: number) => {
-    const key = `${projectId}:${index}`
+  const saveEdit = (projectId: string, index: number, requirementId: string) => {
+    const key = `${projectId}:${requirementId}`
     const text = editing[key]?.trim()
     if (!text) return
     applyRequirementChange({ projectId, action: 'edit', index, newValue: text })
@@ -596,10 +699,10 @@ export function TLRequirementsView() {
                 </li>
               )}
               {p.requirements.map((r, index) => {
-                const key = `${p.id}:${index}`
+                const key = `${p.id}:${r.id}`
                 const isEditing = editing[key] !== undefined
                 return (
-                  <li key={key} className="rounded-xl bg-[#f7f8fa] px-3 py-2">
+                  <li key={r.id} className="rounded-xl bg-[#f7f8fa] px-3 py-2">
                     {isEditing ? (
                       <div className="space-y-2">
                         <textarea
@@ -610,7 +713,7 @@ export function TLRequirementsView() {
                           }
                         />
                         <div className="flex flex-wrap gap-2">
-                          <PrimaryButton onClick={() => saveEdit(p.id, index)}>
+                          <PrimaryButton onClick={() => saveEdit(p.id, index, r.id)}>
                             {isAdmin ? 'Save' : 'Send for approval'}
                           </PrimaryButton>
                           <SecondaryButton
@@ -627,26 +730,46 @@ export function TLRequirementsView() {
                         </div>
                       </div>
                     ) : (
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="text-[13px] text-cs-ink">{r}</p>
-                        <div className="flex shrink-0 gap-1">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setEditing((prev) => ({ ...prev, [key]: r }))
-                            }
-                            className="rounded-lg px-2 py-1 text-[11px] font-semibold text-cs-forest hover:bg-white"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => removeRequirement(p.id, index)}
-                            className="rounded-lg px-2 py-1 text-[11px] font-semibold text-[#b91c1c] hover:bg-white"
-                          >
-                            Delete
-                          </button>
+                      <div className="space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="min-w-0 break-words text-[13px] text-cs-ink">{r.text}</p>
+                          <div className="flex shrink-0 gap-1">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setEditing((prev) => ({ ...prev, [key]: r.text }))
+                              }
+                              className="rounded-lg px-2 py-1 text-[11px] font-semibold text-cs-forest hover:bg-white"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removeRequirement(p.id, index)}
+                              className="rounded-lg px-2 py-1 text-[11px] font-semibold text-[#b91c1c] hover:bg-white"
+                            >
+                              Delete
+                            </button>
+                          </div>
                         </div>
+                        <select
+                          className={inputClass}
+                          value={r.status}
+                          onChange={(e) =>
+                            updateRequirementStatus(
+                              p.id,
+                              r.id,
+                              e.target.value as RequirementStatus,
+                            )
+                          }
+                          aria-label={`Status for ${r.text}`}
+                        >
+                          {REQUIREMENT_STATUS_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                     )}
                   </li>
@@ -775,7 +898,7 @@ export function TLLifecycleView() {
     projectStatusRequests,
     session,
   } = useApp()
-  const isAdmin = session?.person.role === 'admin'
+  const isAdmin = isOrgAdmin(session?.person.role)
   const [holdProjectId, setHoldProjectId] = useState<string | null>(null)
   const [closeProjectId, setCloseProjectId] = useState<string | null>(null)
   const [reopenProjectId, setReopenProjectId] = useState<string | null>(null)
@@ -1016,47 +1139,137 @@ export function TLLifecycleView() {
 }
 
 export function TLBlockersView() {
-  const { blockers, updateBlockerStatus } = useApp()
+  const { blockers, updateBlockerStatus, addBlocker, myProjects, session } = useApp()
+  const [projectId, setProjectId] = useState(myProjects[0]?.id || '')
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [severity, setSeverity] = useState<BlockerSeverity>('high')
+  const [error, setError] = useState<string | null>(null)
+  const ranked = sortBlockersByPriority(blockers)
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    if (!projectId || !title.trim() || !description.trim()) return
+    const result = addBlocker({
+      projectId,
+      title: title.trim(),
+      description: description.trim(),
+      severity,
+    })
+    if (result) {
+      setError(result)
+      return
+    }
+    setError(null)
+    setTitle('')
+    setDescription('')
+  }
+
   return (
-    <Card>
-      <SectionTitle title="Tester blockers (highlighted)" />
-      {blockers.length === 0 ? (
-        <EmptyState text="No blockers logged." />
-      ) : (
-        <ul className="space-y-3">
-          {blockers.map((b) => (
-            <li
-              key={b.id}
-              className={`rounded-xl border px-3 py-3 ${
-                b.status !== 'resolved' && (b.severity === 'critical' || b.severity === 'high')
-                  ? 'border-[#fecaca] bg-[#fef2f2]'
-                  : 'border-cs-line'
-              }`}
-            >
-              <div className="mb-1 flex flex-wrap items-center gap-2">
-                <p className="text-[13px] font-semibold text-cs-ink">{b.title}</p>
-                <Badge tone={severityTone(b.severity)}>{b.severity}</Badge>
-                <Badge tone={b.status === 'resolved' ? 'green' : 'red'}>{b.status}</Badge>
-              </div>
-              <p className="text-[12px] text-cs-muted">
-                {b.projectName} · raised by {b.raisedByName}
-              </p>
-              <p className="mt-1 text-[13px] text-cs-ink">{b.description}</p>
-              {b.status !== 'resolved' && (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <SecondaryButton onClick={() => updateBlockerStatus(b.id, 'in-review')}>
-                    Mark in review
-                  </SecondaryButton>
-                  <PrimaryButton onClick={() => updateBlockerStatus(b.id, 'resolved')}>
-                    Resolve
-                  </PrimaryButton>
-                </div>
-              )}
-            </li>
-          ))}
-        </ul>
+    <div className="space-y-4">
+      {session?.person.role === 'tl' && (
+        <Card>
+          <SectionTitle title="Raise a Team Leader blocker" />
+          <p className="mb-3 text-[12px] text-cs-muted">
+            Team Leader blockers appear first and with higher priority in project details.
+          </p>
+          <form className="grid gap-3 md:grid-cols-2" onSubmit={submit}>
+            <Field label="Project">
+              <select
+                className={inputClass}
+                value={projectId}
+                onChange={(e) => setProjectId(e.target.value)}
+              >
+                {myProjects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Severity">
+              <select
+                className={inputClass}
+                value={severity}
+                onChange={(e) => setSeverity(e.target.value as BlockerSeverity)}
+              >
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="critical">Critical</option>
+              </select>
+            </Field>
+            <div className="md:col-span-2">
+              <Field label="Title">
+                <input
+                  className={inputClass}
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  required
+                />
+              </Field>
+            </div>
+            <div className="md:col-span-2">
+              <Field label="Description">
+                <textarea
+                  className={inputClass}
+                  rows={3}
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  required
+                />
+              </Field>
+            </div>
+            {error && <p className="md:col-span-2 text-[12px] font-semibold text-red-600">{error}</p>}
+            <div className="md:col-span-2">
+              <PrimaryButton type="submit">Raise blocker</PrimaryButton>
+            </div>
+          </form>
+        </Card>
       )}
-    </Card>
+      <Card>
+        <SectionTitle title="Blockers" />
+        {ranked.length === 0 ? (
+          <EmptyState text="No blockers logged." />
+        ) : (
+          <ul className="space-y-3">
+            {ranked.map((b) => (
+              <li
+                key={b.id}
+                className={`rounded-xl border px-3 py-3 ${
+                  b.raisedByRole === 'tl'
+                    ? 'border-[#f59e0b] bg-[#fffbeb]'
+                    : b.status !== 'resolved' && (b.severity === 'critical' || b.severity === 'high')
+                      ? 'border-[#fecaca] bg-[#fef2f2]'
+                      : 'border-cs-line'
+                }`}
+              >
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <p className="text-[13px] font-semibold text-cs-ink">{b.title}</p>
+                  {b.raisedByRole === 'tl' && <Badge tone="yellow">Team Leader · high priority</Badge>}
+                  <Badge tone={severityTone(b.severity)}>{b.severity}</Badge>
+                  <Badge tone={b.status === 'resolved' ? 'green' : 'red'}>{b.status}</Badge>
+                </div>
+                <p className="text-[12px] text-cs-muted">
+                  {b.projectName} · raised by {b.raisedByName}
+                </p>
+                <p className="mt-1 text-[13px] text-cs-ink">{b.description}</p>
+                {b.status !== 'resolved' && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <SecondaryButton onClick={() => updateBlockerStatus(b.id, 'in-review')}>
+                      Mark in review
+                    </SecondaryButton>
+                    <PrimaryButton onClick={() => updateBlockerStatus(b.id, 'resolved')}>
+                      Resolve
+                    </PrimaryButton>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    </div>
   )
 }
 
@@ -1084,6 +1297,8 @@ export function TLDashboard({ active }: { active: NavKey }) {
       return <TLQueriesView />
     case 'leave':
       return <LeaveRequestPanel />
+    case 'profile':
+      return <TesterProfile />
     default:
       return <TLOverview />
   }
