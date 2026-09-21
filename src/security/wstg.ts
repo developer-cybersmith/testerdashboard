@@ -43,6 +43,12 @@ export function sanitizeImageDataUrl(raw: string, maxBytes = 750_000) {
   return sanitizeDataUrl(value, maxBytes)
 }
 
+export function sanitizePdfDataUrl(raw: string, maxBytes = 2_000_000) {
+  const value = raw.trim()
+  if (!/^data:application\/pdf;base64,/i.test(value)) return ''
+  return sanitizeDataUrl(value, maxBytes)
+}
+
 export function sanitizeDataUrl(raw: string, maxBytes: number) {
   const value = raw.trim()
   if (!value.startsWith('data:') || /data:text\/html|javascript:/i.test(value)) return ''

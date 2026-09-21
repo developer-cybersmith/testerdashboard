@@ -84,7 +84,9 @@ export default function LoginPage() {
             </p>
           </div>
           <div className="mt-6 space-y-2">
-            {people.map((person) => (
+            {people
+              .filter((person) => person.lifecycleStatus !== 'exited' && person.status !== 'inactive')
+              .map((person) => (
               <button
                 key={person.id}
                 type="button"

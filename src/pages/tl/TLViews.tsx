@@ -1,6 +1,7 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { isOrgAdmin, personLabel, roleLabel, sortBlockersByPriority, useApp } from '../../context/AppContext'
 import TesterProfile from '../../components/TesterProfile'
+import EmployeesHub from '../../components/hr/EmployeesHub'
 import type { NavKey } from '../../components/Sidebar'
 import { REQUIREMENT_STATUS_OPTIONS, type BlockerSeverity, type RequirementStatus } from '../../types'
 import { LeadDashboardWidgets } from '../../components/dashboard/DashboardWidgets'
@@ -1297,6 +1298,8 @@ export function TLDashboard({ active }: { active: NavKey }) {
       return <TLQueriesView />
     case 'leave':
       return <LeaveRequestPanel />
+    case 'people':
+      return <EmployeesHub />
     case 'profile':
       return <TesterProfile />
     default:

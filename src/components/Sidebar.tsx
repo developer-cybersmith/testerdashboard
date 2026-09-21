@@ -11,7 +11,7 @@ import {
   CalendarRange,
   CircleUser,
 } from 'lucide-react'
-import { roleLabel, useApp } from '../context/AppContext'
+import { isOrgAdmin, roleLabel, useApp } from '../context/AppContext'
 import type { NotificationType, Role } from '../types'
 
 export type NavKey =
@@ -38,6 +38,7 @@ const leadNav = [
   { key: 'blockers' as const, label: 'Blockers', icon: ShieldAlert },
   { key: 'queries' as const, label: 'Query Session', icon: MessageSquareWarning },
   { key: 'leave' as const, label: 'Leave Requests', icon: ClipboardList },
+  { key: 'people' as const, label: 'Employees', icon: Users },
   { key: 'profile' as const, label: 'My Profile', icon: CircleUser },
 ]
 
@@ -66,6 +67,7 @@ const navByRole: Record<Role, { key: NavKey; label: string; icon: typeof LayoutD
     { key: 'queries', label: 'Query Session', icon: MessageSquareWarning },
     { key: 'leave', label: 'Leave Request', icon: CalendarRange },
     { key: 'blockers', label: 'My Blockers', icon: ShieldAlert },
+    { key: 'people', label: 'Employees', icon: Users },
     { key: 'profile', label: 'My Profile', icon: CircleUser },
   ],
 }
@@ -87,7 +89,11 @@ export function notificationNavKey(type: NotificationType, role?: Role): NavKey 
     case 'lifecycle':
       return 'lifecycle'
     case 'worked-day':
-      return role === 'user' ? 'tracker' : 'tracker'
+      return role === 'user' || role === 'tl' ? 'leave' : 'leave'
+    case 'hr-ticket':
+      return isOrgAdmin(role) ? 'people' : 'profile'
+    case 'people':
+      return 'people'
     default:
       return 'projects'
   }

@@ -25,12 +25,32 @@ export interface Person {
   phone?: string
   location?: string
   department?: string
+  managerId?: string
+  skills?: string[]
+  lifecycleStatus?: LifecycleStatus
+  probationEndDate?: string
+  confirmationDate?: string
+  contractEndDate?: string
+  nextAppraisalDate?: string
+  documentExpiryDate?: string
+  lastWorkingDate?: string
+  exitDate?: string
+  shiftId?: string
   mustChangePassword?: boolean
   leaveBalance?: LeaveBalance
   performanceScore?: number
   documents?: EmployeeDocument[]
   notes?: EmployeeNote[]
 }
+
+export type LifecycleStatus =
+  | 'onboarding'
+  | 'probation'
+  | 'confirmed'
+  | 'offboarding'
+  | 'exited'
+
+export type LeaveKind = 'earned' | 'sick' | 'casual' | 'other' | 'paid'
 
 export interface LeaveBalance {
   allUsed: number
@@ -46,6 +66,7 @@ export interface LeaveBalance {
 export interface EmployeeDocument {
   name: string
   kind: string
+  expiresOn?: string
 }
 
 export interface EmployeeNote {
@@ -137,6 +158,8 @@ export type NotificationType =
   | 'requirement'
   | 'lifecycle'
   | 'worked-day'
+  | 'hr-ticket'
+  | 'people'
 
 export interface AppNotification {
   id: string
@@ -229,7 +252,7 @@ export interface LeaveRequest {
   fromDate: string
   toDate: string
   reason: string
-  kind?: 'paid' | 'other'
+  kind?: LeaveKind
   status: LeaveStatus
   tlId: string
   createdAt: string
@@ -349,4 +372,139 @@ export interface ClientDiscussion {
 export interface AppUserSession {
   person: Person
   loginAt: string
+}
+
+export interface ChecklistItem {
+  id: string
+  label: string
+  done: boolean
+  doneAt?: string
+  doneBy?: string
+}
+
+export interface EmployeeChecklist {
+  personId: string
+  kind: 'onboarding' | 'offboarding'
+  items: ChecklistItem[]
+}
+
+export interface PerformanceReview {
+  id: string
+  personId: string
+  cycle: string
+  selfReview?: string
+  managerReview?: string
+  managerId?: string
+  selfSubmittedAt?: string
+  managerSubmittedAt?: string
+  status: 'draft' | 'self-done' | 'complete'
+  rating?: number
+}
+
+export type AssetKind = 'laptop' | 'id-card' | 'vpn' | 'other'
+
+export interface ItAsset {
+  id: string
+  personId: string
+  kind: AssetKind
+  label: string
+  serial?: string
+  status: 'allotted' | 'returned' | 'revoked'
+  allottedAt: string
+  returnedAt?: string
+  allottedBy?: string
+}
+
+export interface AccessGrant {
+  id: string
+  personId: string
+  scope: 'tool' | 'project'
+  name: string
+  projectId?: string
+  status: 'active' | 'revoked'
+  grantedAt: string
+  revokedAt?: string
+}
+
+export interface Payslip {
+  id: string
+  personId: string
+  month: string
+  fileName: string
+  dataUrl: string
+  uploadedAt: string
+  uploadedBy: string
+}
+
+export interface HrTicket {
+  id: string
+  fromUserId: string
+  fromUserName: string
+  subject: string
+  message: string
+  status: 'open' | 'answered'
+  createdAt: string
+  reply?: string
+  repliedBy?: string
+  repliedAt?: string
+}
+
+export interface RegularizationRequest {
+  id: string
+  userId: string
+  userName: string
+  date: string
+  reason: string
+  status: 'pending' | 'approved' | 'rejected'
+  createdAt: string
+  decidedBy?: string
+  decidedByName?: string
+}
+
+export interface ShiftTemplate {
+  id: string
+  name: string
+  start: string
+  end: string
+}
+
+export interface RosterEntry {
+  id: string
+  personId: string
+  date: string
+  shiftId: string
+}
+
+export interface ChannelIntegrations {
+  slackEnabled: boolean
+  slackWebhook: string
+  teamsEnabled: boolean
+  teamsWebhook: string
+}
+
+export interface ChannelPost {
+  id: string
+  channel: 'slack' | 'teams'
+  title: string
+  message: string
+  createdAt: string
+  delivery: 'logged' | 'sent' | 'failed'
+}
+
+export interface HistoricalExit {
+  name: string
+  department: string
+  joinDate: string
+  leftDate: string
+}
+
+export interface PeopleAlert {
+  id: string
+  kind: 'birthday' | 'anniversary' | 'contract'
+  title: string
+  message: string
+  personId: string
+  personName: string
+  date: string
+  urgency: 'today' | 'soon'
 }

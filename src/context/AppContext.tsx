@@ -23,28 +23,53 @@ import {
   vaptKpis,
   vaptKras,
 } from '../data/mockData'
+import {
+  historicalExits,
+  initialAccessGrants,
+  initialAssets,
+  initialChannelPosts,
+  initialChecklists,
+  initialHrTickets,
+  initialIntegrations,
+  initialPayslips,
+  initialRegularizations,
+  initialReviews,
+  initialRoster,
+} from '../data/hrSeed'
 import type {
+  AccessGrant,
   AppNotification,
   AppUserSession,
+  AssetKind,
   Blocker,
   BlockerSeverity,
+  ChannelIntegrations,
+  ChannelPost,
   ChatMessage,
   ClientDiscussion,
   DailyUpdate,
+  EmployeeChecklist,
+  HrTicket,
+  ItAsset,
+  LeaveKind,
   LeaveRequest,
   LeaveStatus,
+  Payslip,
+  PerformanceReview,
   Person,
   Project,
   ProjectRequirement,
   ProjectStatus,
   ProjectStatusAction,
   ProjectStatusRequest,
+  RegularizationRequest,
   RequirementStatus,
   QueryAttachment,
   QueryItem,
   RequirementAction,
   RequirementChangeRequest,
   Role,
+  RosterEntry,
   ScopeCredit,
   ScopeItem,
   SharePointLink,
@@ -60,13 +85,29 @@ import {
   sanitizeDataUrl,
   sanitizeImageDataUrl,
   sanitizeLines,
+  sanitizePdfDataUrl,
   sanitizeText,
   sanitizeUrl,
 } from '../security/wstg'
 import { isLateMorningGateway, slotFromUpdate } from '../attendance'
+import {
+  applyLeaveUsage,
+  defaultLeaveBalance,
+  OFFBOARDING_LABELS,
+  ONBOARDING_LABELS,
+  quotaBucket,
+  remainingLeave,
+} from '../hr/peopleOps'
 
 export { isOrgAdmin } from '../security/authorize'
 export { isLateMorningGateway, slotFromUpdate } from '../attendance'
+export {
+  ALL_LEAVE_MAX,
+  CASUAL_LEAVE_MAX,
+  EARNED_LEAVE_MAX,
+  PAID_LEAVE_MAX,
+  SICK_LEAVE_MAX,
+} from '../hr/peopleOps'
 export const DEMO_PASSWORD = 'Secure@2026'
 export const COMPANY_DOMAIN = 'cybersmith.secure.com'
 export const OFFICE_LOCATIONS = [
@@ -79,7 +120,6 @@ export const OFFICE_LOCATIONS = [
 ] as const
 
 const TRACKER_WINDOW_HOURS = 7
-export const PAID_LEAVE_MAX = 12
 export type UpdateSlot = 'morning' | 'evening'
 
 function localDateISO(d = new Date()) {
@@ -94,6 +134,33 @@ function leaveDayCount(fromDate: string, toDate: string) {
   const end = new Date(`${toDate}T00:00:00`)
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return 0
   return Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1
+}
+
+function addCalendarDays(iso: string, days: number) {
+  const d = new Date(`${iso}T00:00:00`)
+  d.setDate(d.getDate() + days)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function httpsWebhook(raw: string) {
+  const url = sanitizeUrl(raw)
+  return url.startsWith('https://') ? url : ''
+}
+
+function makeChecklist(personId: string, kind: 'onboarding' | 'offboarding'): EmployeeChecklist {
+  const labels = kind === 'onboarding' ? ONBOARDING_LABELS : OFFBOARDING_LABELS
+  return {
+    personId,
+    kind,
+    items: labels.map((label, index) => ({
+      id: `${kind}-${personId}-${index + 1}`,
+      label,
+      done: false,
+    })),
+  }
 }
 
 export function currentUpdateSlot(now = new Date()): UpdateSlot | null {
@@ -180,17 +247,6 @@ function applyAutoClose(project: Project): { project: Project; didClose: boolean
   }
 }
 
-function paidLeaveDaysCommitted(requests: LeaveRequest[], userId: string) {
-  return requests
-    .filter(
-      (lv) =>
-        lv.userId === userId &&
-        (lv.kind || 'other') === 'paid' &&
-        (lv.status === 'approved' || lv.status === 'pending-tl' || lv.status === 'pending-admin'),
-    )
-    .reduce((sum, lv) => sum + leaveDayCount(lv.fromDate, lv.toDate), 0)
-}
-
 interface AppContextValue {
   session: AppUserSession | null
   login: (personId: string) => void
@@ -211,6 +267,8 @@ interface AppContextValue {
     gender?: string
     dateOfBirth?: string
     location?: string
+    managerId?: string
+    skills?: string
   }) => string | null
   people: Person[]
   projects: Project[]
@@ -339,7 +397,7 @@ interface AppContextValue {
     fromDate: string
     toDate: string
     reason: string
-    kind: 'paid' | 'other'
+    kind: LeaveKind
   }) => string | null
   decideLeaveRequest: (
     leaveId: string,
@@ -357,6 +415,67 @@ interface AppContextValue {
   }) => string | null
   decideWorkedDay: (requestId: string, decision: 'approve' | 'reject') => void
   lateMorningGatewayOpen: boolean
+  checklists: EmployeeChecklist[]
+  reviews: PerformanceReview[]
+  assets: ItAsset[]
+  accessGrants: AccessGrant[]
+  payslips: Payslip[]
+  hrTickets: HrTicket[]
+  regularizations: RegularizationRequest[]
+  roster: RosterEntry[]
+  integrations: ChannelIntegrations
+  channelPosts: ChannelPost[]
+  historicalExits: typeof historicalExits
+  toggleChecklistItem: (
+    personId: string,
+    kind: 'onboarding' | 'offboarding',
+    itemId: string,
+  ) => void
+  startOffboarding: (personId: string, lastWorkingDate?: string) => string | null
+  completeOffboarding: (personId: string) => string | null
+  extendEmploymentPeriod: (
+    personId: string,
+    input: { lastWorkingDate?: string; contractEndDate?: string },
+  ) => string | null
+  confirmProbation: (personId: string) => string | null
+  submitSelfReview: (personId: string, cycle: string, text: string) => string | null
+  submitManagerReview: (reviewId: string, text: string, rating: number) => string | null
+  allotAsset: (input: {
+    personId: string
+    kind: AssetKind
+    label: string
+    serial?: string
+  }) => string | null
+  closeAsset: (assetId: string, next: 'returned' | 'revoked') => string | null
+  grantToolAccess: (personId: string, name: string) => string | null
+  revokeAccessGrant: (grantId: string) => void
+  uploadPayslip: (input: {
+    personId: string
+    month: string
+    fileName: string
+    dataUrl: string
+  }) => string | null
+  raiseHrTicket: (subject: string, message: string) => string | null
+  replyHrTicket: (ticketId: string, reply: string) => string | null
+  requestRegularization: (date: string, reason: string) => string | null
+  decideRegularization: (requestId: string, decision: 'approve' | 'reject') => void
+  setPersonShift: (personId: string, shiftId: string) => void
+  upsertRoster: (personId: string, date: string, shiftId: string) => void
+  saveIntegrations: (input: ChannelIntegrations) => string | null
+  updateHrProfile: (personId: string, input: {
+    managerId?: string
+    skills?: string[]
+    department?: string
+    location?: string
+    jobTitle?: string
+    contractEndDate?: string
+    nextAppraisalDate?: string
+    documentExpiryDate?: string
+    probationEndDate?: string
+  }) => string | null
+  directoryFocusId: string | null
+  openDirectoryPerson: (personId: string) => void
+  clearDirectoryFocus: () => void
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -440,6 +559,13 @@ export function nextEmployeeCode(people: { employeeCode?: string }[]) {
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<AppUserSession | null>(null)
+  const [directoryFocusId, setDirectoryFocusId] = useState<string | null>(null)
+  const openDirectoryPerson = useCallback((personId: string) => {
+    setDirectoryFocusId(personId)
+  }, [])
+  const clearDirectoryFocus = useCallback(() => {
+    setDirectoryFocusId(null)
+  }, [])
   const [people, setPeople] = useState<Person[]>(initialPeople)
   const orgAdminIds = useMemo(
     () => people.filter((p) => p.role === 'admin' || p.role === 'hr').map((p) => p.id),
@@ -459,6 +585,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
   const [projectStatusRequests, setProjectStatusRequests] = useState<ProjectStatusRequest[]>([])
   const [workedDayRequests, setWorkedDayRequests] = useState<WorkedDayRequest[]>([])
+  const [checklists, setChecklists] = useState<EmployeeChecklist[]>(initialChecklists)
+  const [reviews, setReviews] = useState<PerformanceReview[]>(initialReviews)
+  const [assets, setAssets] = useState<ItAsset[]>(initialAssets)
+  const [accessGrants, setAccessGrants] = useState<AccessGrant[]>(initialAccessGrants)
+  const [payslips, setPayslips] = useState<Payslip[]>(initialPayslips)
+  const [hrTickets, setHrTickets] = useState<HrTicket[]>(initialHrTickets)
+  const [regularizations, setRegularizations] = useState<RegularizationRequest[]>(initialRegularizations)
+  const [roster, setRoster] = useState<RosterEntry[]>(initialRoster)
+  const [integrations, setIntegrations] = useState<ChannelIntegrations>(initialIntegrations)
+  const [channelPosts, setChannelPosts] = useState<ChannelPost[]>(initialChannelPosts)
   const [nowTick, setNowTick] = useState(() => Date.now())
   const [loginFails, setLoginFails] = useState(0)
   const [loginLockedUntil, setLoginLockedUntil] = useState(0)
@@ -527,6 +663,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       return 'Invalid email or password'
     }
+    if (person.status === 'inactive' || person.lifecycleStatus === 'exited') {
+      return 'This account is closed. The employee record stays in Employees for HR records.'
+    }
     setLoginFails(0)
     setLoginLockedUntil(0)
     lastActiveRef.current = Date.now()
@@ -573,18 +712,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
         dateOfBirth: input.dateOfBirth,
         phone: input.phone ? sanitizeText(input.phone, 30) : undefined,
         location: input.location ? sanitizeText(input.location, 80) : undefined,
+        managerId: input.managerId && people.some((p) => p.id === input.managerId) ? input.managerId : undefined,
+        skills: input.skills
+          ? input.skills
+              .split(',')
+              .map((s) => sanitizeText(s, 40))
+              .filter(Boolean)
+              .slice(0, 8)
+          : [],
+        lifecycleStatus: 'onboarding',
+        probationEndDate: addCalendarDays(input.joinDate || todayISO(), 90),
+        contractEndDate: addCalendarDays(input.joinDate || todayISO(), 365),
+        nextAppraisalDate: addCalendarDays(input.joinDate || todayISO(), 180),
+        shiftId: 'shift-general',
         mustChangePassword: true,
         department: input.department ? sanitizeText(input.department, 80) : 'VAPT',
-        leaveBalance: {
-          allUsed: 0,
-          allMax: PAID_LEAVE_MAX,
-          annualUsed: 0,
-          annualMax: PAID_LEAVE_MAX,
-          casualUsed: 0,
-          casualMax: 0,
-          sickUsed: 0,
-          sickMax: PAID_LEAVE_MAX,
-        },
+        leaveBalance: defaultLeaveBalance(),
         performanceScore: 80,
         documents: [
           { name: 'Contract Agreement.pdf', kind: 'pdf' },
@@ -593,6 +736,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         notes: [],
       }
       setPeople((prev) => [...prev, person])
+      setChecklists((prev) => [...prev, makeChecklist(person.id, 'onboarding')])
       return null
     },
     [session, people],
@@ -613,7 +757,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       fresh.gender !== session.person.gender ||
       fresh.dateOfBirth !== session.person.dateOfBirth ||
       fresh.avatarUploaded !== session.person.avatarUploaded ||
-      fresh.mustChangePassword !== session.person.mustChangePassword
+      fresh.mustChangePassword !== session.person.mustChangePassword ||
+      fresh.managerId !== session.person.managerId ||
+      fresh.shiftId !== session.person.shiftId ||
+      fresh.lifecycleStatus !== session.person.lifecycleStatus ||
+      JSON.stringify(fresh.leaveBalance) !== JSON.stringify(session.person.leaveBalance) ||
+      JSON.stringify(fresh.skills) !== JSON.stringify(session.person.skills)
     ) {
       setSession((s) => (s ? { ...s, person: fresh } : s))
     }
@@ -1556,13 +1705,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!days) return 'Choose a valid date range'
       const cleanedReason = sanitizeText(reason, 1000)
       if (!cleanedReason) return 'Reason is required'
-      const leaveKind = kind === 'paid' ? 'paid' : 'other'
-      if (leaveKind === 'paid') {
-        const remaining = PAID_LEAVE_MAX - paidLeaveDaysCommitted(leaveRequests, session.person.id)
+      const leaveKind: LeaveKind =
+        kind === 'sick' || kind === 'casual' || kind === 'earned' || kind === 'paid' || kind === 'other'
+          ? kind
+          : 'other'
+      const bucket = quotaBucket(leaveKind)
+      if (bucket) {
+        const remaining = remainingLeave(session.person, leaveRequests, bucket, {
+          updates,
+          workedDays: workedDayRequests,
+        })
         if (days > remaining) {
           return remaining <= 0
-            ? 'All 12 paid leave days are used or already requested'
-            : `Only ${remaining} paid leave day${remaining === 1 ? '' : 's'} remaining`
+            ? `All ${bucket} leave days are used or already requested`
+            : `Only ${remaining} ${bucket} leave day${remaining === 1 ? '' : 's'} remaining`
         }
       }
       const isTlSelf = session.person.role === 'tl'
@@ -1618,7 +1774,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       return null
     },
-    [session, projects, leaveRequests, pushNotification, orgAdminIds],
+    [session, projects, leaveRequests, updates, workedDayRequests, pushNotification, orgAdminIds],
+  )
+
+  const queueChannelPost = useCallback(
+    (title: string, message: string) => {
+      const stamp = new Date().toISOString()
+      const rows: ChannelPost[] = []
+      const deliver = (channel: 'slack' | 'teams', webhookRaw: string, enabled: boolean) => {
+        if (!enabled) return
+        const id = uid('ch')
+        const webhook = httpsWebhook(webhookRaw)
+        rows.push({
+          id,
+          channel,
+          title: sanitizeText(title, 120),
+          message: sanitizeText(message, 400),
+          createdAt: stamp,
+          delivery: webhook ? 'logged' : 'logged',
+        })
+        if (!webhook) return
+        void fetch(webhook, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: `${title}\n${message}` }),
+        })
+          .then((res) => {
+            setChannelPosts((prev) =>
+              prev.map((p) =>
+                p.id === id ? { ...p, delivery: res.ok ? 'sent' : 'failed' } : p,
+              ),
+            )
+          })
+          .catch(() => {
+            setChannelPosts((prev) =>
+              prev.map((p) => (p.id === id ? { ...p, delivery: 'failed' } : p)),
+            )
+          })
+      }
+      deliver('slack', integrations.slackWebhook, integrations.slackEnabled)
+      deliver('teams', integrations.teamsWebhook, integrations.teamsEnabled)
+      if (rows.length) setChannelPosts((prev) => [...rows, ...prev])
+    },
+    [integrations],
   )
 
   const decideLeaveRequest = useCallback(
@@ -1628,36 +1826,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (decision === 'approve' && !cleanedNote) return
       const target = leaveRequests.find((lv) => lv.id === leaveId)
       const actorIsOrgAdmin = isOrgAdmin(session.person.role)
+      const bucket = target ? quotaBucket(target.kind) : null
       if (
         decision === 'approve' &&
         actorIsOrgAdmin &&
         target?.status === 'pending-admin' &&
-        (target.kind || 'other') === 'paid'
+        bucket
       ) {
         const days = leaveDayCount(target.fromDate, target.toDate)
-        const used = paidLeaveDaysCommitted(
-          leaveRequests.filter((row) => row.id !== leaveId),
-          target.userId,
-        )
-        if (used + days > PAID_LEAVE_MAX) return
+        const owner = people.find((p) => p.id === target.userId)
+        const remaining = owner
+          ? remainingLeave(
+              owner,
+              leaveRequests.filter((row) => row.id !== leaveId),
+              bucket,
+              { updates, workedDays: workedDayRequests },
+            )
+          : 0
+        if (days > remaining) return
         setPeople((prev) =>
-          prev.map((p) => {
-            if (p.id !== target.userId) return p
-            const nextUsed = Math.min(PAID_LEAVE_MAX, (p.leaveBalance?.annualUsed || 0) + days)
-            return {
-              ...p,
-              leaveBalance: {
-                allUsed: nextUsed,
-                allMax: PAID_LEAVE_MAX,
-                annualUsed: nextUsed,
-                annualMax: PAID_LEAVE_MAX,
-                casualUsed: p.leaveBalance?.casualUsed || 0,
-                casualMax: 0,
-                sickUsed: p.leaveBalance?.sickUsed || 0,
-                sickMax: PAID_LEAVE_MAX,
-              },
-            }
-          }),
+          prev.map((p) =>
+            p.id === target.userId
+              ? { ...p, leaveBalance: applyLeaveUsage(p.leaveBalance, bucket, days) }
+              : p,
+          ),
         )
       }
       setLeaveRequests((prev) =>
@@ -1716,13 +1908,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
             }
           }
           if (actorIsOrgAdmin && lv.status === 'pending-admin') {
-            if ((lv.kind || 'other') === 'paid') {
+            const lvBucket = quotaBucket(lv.kind)
+            if (lvBucket) {
               const days = leaveDayCount(lv.fromDate, lv.toDate)
-              const used = paidLeaveDaysCommitted(
-                leaveRequests.filter((row) => row.id !== lv.id),
-                lv.userId,
-              )
-              if (used + days > PAID_LEAVE_MAX) return lv
+              const owner = people.find((p) => p.id === lv.userId)
+              const remaining = owner
+                ? remainingLeave(
+                    owner,
+                    leaveRequests.filter((row) => row.id !== lv.id),
+                    lvBucket,
+                    { updates, workedDays: workedDayRequests },
+                  )
+                : 0
+              if (days > remaining) return lv
             }
             pushNotification({
               recipientId: lv.userId,
@@ -1740,6 +1938,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 relatedId: leaveId,
               })
             }
+            queueChannelPost(
+              'Leave approved',
+              `${lv.userName}: ${lv.fromDate} → ${lv.toDate}`,
+            )
             return {
               ...lv,
               status: 'approved' as LeaveStatus,
@@ -1751,7 +1953,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }),
       )
     },
-    [session, leaveRequests, pushNotification, orgAdminIds],
+    [session, leaveRequests, people, updates, workedDayRequests, pushNotification, orgAdminIds, queueChannelPost],
   )
 
   const requestWorkedDay = useCallback(
@@ -1920,6 +2122,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ...prev,
         ])
       }
+      if (decision === 'approve') {
+        queueChannelPost(
+          isLate ? 'Late morning approved' : 'Worked day approved',
+          `${target.userName} · ${target.date}`,
+        )
+      }
       pushNotification({
         recipientId: target.userId,
         type: 'worked-day',
@@ -1940,7 +2148,678 @@ export function AppProvider({ children }: { children: ReactNode }) {
         relatedId: requestId,
       })
     },
-    [session, workedDayRequests, projects, pushNotification],
+    [session, workedDayRequests, projects, pushNotification, queueChannelPost],
+  )
+
+  const toggleChecklistItem = useCallback(
+    (personId: string, kind: 'onboarding' | 'offboarding', itemId: string) => {
+      if (!session || !canAct(session.person.role, ['hr', 'admin'])) return
+      setChecklists((prev) => {
+        const exists = prev.some((c) => c.personId === personId && c.kind === kind)
+        const base = exists ? prev : [...prev, makeChecklist(personId, kind)]
+        return base.map((c) => {
+          if (c.personId !== personId || c.kind !== kind) return c
+          return {
+            ...c,
+            items: c.items.map((item) =>
+              item.id === itemId
+                ? {
+                    ...item,
+                    done: !item.done,
+                    doneAt: !item.done ? new Date().toISOString() : undefined,
+                    doneBy: !item.done ? session.person.id : undefined,
+                  }
+                : item,
+            ),
+          }
+        })
+      })
+    },
+    [session],
+  )
+
+  const startOffboarding = useCallback(
+    (personId: string, lastWorkingDate?: string) => {
+      if (!session || !canAct(session.person.role, ['hr'])) return 'Only HR can start offboarding'
+      const person = people.find((p) => p.id === personId)
+      if (!person) return 'Employee not found'
+      if (person.lifecycleStatus === 'exited') return 'This employee has already exited'
+      if (person.lifecycleStatus === 'offboarding') return 'Offboarding is already in progress'
+      const exitOn = lastWorkingDate || addCalendarDays(todayISO(), 30)
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(exitOn) || exitOn < todayISO()) {
+        return 'Last working date must be today or later'
+      }
+      setPeople((prev) =>
+        prev.map((p) =>
+          p.id === personId
+            ? { ...p, lifecycleStatus: 'offboarding' as const, lastWorkingDate: exitOn }
+            : p,
+        ),
+      )
+      setChecklists((prev) =>
+        prev.some((c) => c.personId === personId && c.kind === 'offboarding')
+          ? prev
+          : [...prev, makeChecklist(personId, 'offboarding')],
+      )
+      pushNotification({
+        recipientId: personId,
+        type: 'people',
+        title: 'Offboarding started',
+        message: `Last working day is ${exitOn}. Complete the exit checklist with HR.`,
+        relatedId: personId,
+      })
+      return null
+    },
+    [session, people, pushNotification],
+  )
+
+  const completeOffboarding = useCallback(
+    (personId: string) => {
+      if (!session || !canAct(session.person.role, ['hr'])) return 'Only HR can complete offboarding'
+      const person = people.find((p) => p.id === personId)
+      if (!person) return 'Employee not found'
+      if (person.lifecycleStatus !== 'offboarding') return 'Start offboarding before completing exit'
+      const exitDate = person.lastWorkingDate && person.lastWorkingDate < todayISO()
+        ? person.lastWorkingDate
+        : todayISO()
+      setPeople((prev) =>
+        prev.map((p) =>
+          p.id === personId
+            ? {
+                ...p,
+                lifecycleStatus: 'exited' as const,
+                status: 'inactive' as const,
+                exitDate,
+                lastWorkingDate: p.lastWorkingDate || exitDate,
+              }
+            : p,
+        ),
+      )
+      setAssets((prev) =>
+        prev.map((a) =>
+          a.personId === personId && a.status === 'allotted'
+            ? { ...a, status: 'returned' as const, returnedAt: todayISO() }
+            : a,
+        ),
+      )
+      setChecklists((prev) =>
+        prev.map((c) => {
+          if (c.personId !== personId || c.kind !== 'offboarding') return c
+          return {
+            ...c,
+            items: c.items.map((item) => {
+              const autoDone =
+                item.label === 'Laptop returned' ||
+                item.label === 'ID card returned' ||
+                item.label === 'VPN access revoked' ||
+                item.label === 'Tool / project access revoked'
+              if (!autoDone || item.done) return item
+              return {
+                ...item,
+                done: true,
+                doneAt: new Date().toISOString(),
+                doneBy: session.person.id,
+              }
+            }),
+          }
+        }),
+      )
+      setAccessGrants((prev) =>
+        prev.map((g) =>
+          g.personId === personId && g.status === 'active'
+            ? { ...g, status: 'revoked' as const, revokedAt: todayISO() }
+            : g,
+        ),
+      )
+      pushNotification({
+        recipientId: personId,
+        type: 'people',
+        title: 'Exit clearance completed',
+        message: 'Assets returned and access revoked.',
+        relatedId: personId,
+      })
+      return null
+    },
+    [session, people, pushNotification],
+  )
+
+  const extendEmploymentPeriod = useCallback(
+    (personId: string, input: { lastWorkingDate?: string; contractEndDate?: string }) => {
+      if (!session || !canAct(session.person.role, ['hr'])) return 'Only HR can extend this period'
+      const person = people.find((p) => p.id === personId)
+      if (!person) return 'Employee not found'
+      if (person.lifecycleStatus === 'exited') return 'Cannot extend an exited employee'
+      const nextLast = input.lastWorkingDate?.trim()
+      const nextContract = input.contractEndDate?.trim()
+      if (!nextLast && !nextContract) return 'Choose a new last working date or contract end date'
+      if (nextLast) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(nextLast) || nextLast < todayISO()) {
+          return 'Last working date must be today or later'
+        }
+        if (person.lifecycleStatus !== 'offboarding') {
+          return 'Start offboarding before extending the last working date'
+        }
+        if (person.lastWorkingDate && nextLast <= person.lastWorkingDate) {
+          return 'Pick a last working date after the current one'
+        }
+      }
+      if (nextContract) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(nextContract) || nextContract <= todayISO()) {
+          return 'Contract end date must be after today'
+        }
+        if (person.contractEndDate && nextContract <= person.contractEndDate) {
+          return 'Pick a contract end date after the current one'
+        }
+      }
+      setPeople((prev) =>
+        prev.map((p) =>
+          p.id === personId
+            ? {
+                ...p,
+                lastWorkingDate: nextLast || p.lastWorkingDate,
+                contractEndDate: nextContract || p.contractEndDate,
+              }
+            : p,
+        ),
+      )
+      pushNotification({
+        recipientId: personId,
+        type: 'people',
+        title: 'Period extended',
+        message: nextLast
+          ? `Last working day moved to ${nextLast}`
+          : `Contract now ends ${nextContract}`,
+        relatedId: personId,
+      })
+      return null
+    },
+    [session, people, pushNotification],
+  )
+
+  const confirmProbation = useCallback(
+    (personId: string) => {
+      if (!session || !canAct(session.person.role, ['hr', 'admin'])) {
+        return 'Only HR or Admin can confirm employment'
+      }
+      setPeople((prev) =>
+        prev.map((p) =>
+          p.id === personId
+            ? {
+                ...p,
+                lifecycleStatus: 'confirmed' as const,
+                confirmationDate: todayISO(),
+              }
+            : p,
+        ),
+      )
+      pushNotification({
+        recipientId: personId,
+        type: 'people',
+        title: 'Employment confirmed',
+        message: 'Probation closed. You are confirmed.',
+        relatedId: personId,
+      })
+      return null
+    },
+    [session, pushNotification],
+  )
+
+  const submitSelfReview = useCallback(
+    (personId: string, cycle: string, text: string) => {
+      if (!session) return 'Sign in required'
+      if (session.person.id !== personId && !isOrgAdmin(session.person.role)) {
+        return 'You can only submit your own self-review'
+      }
+      const cleaned = sanitizeText(text, 2000)
+      if (!cleaned) return 'Self-review notes are required'
+      setReviews((prev) => {
+        const found = prev.find((r) => r.personId === personId && r.cycle === cycle)
+        if (!found) {
+          return [
+            {
+              id: uid('rev'),
+              personId,
+              cycle: sanitizeText(cycle, 40),
+              selfReview: cleaned,
+              selfSubmittedAt: new Date().toISOString(),
+              status: 'self-done' as const,
+              managerId: people.find((p) => p.id === personId)?.managerId,
+            },
+            ...prev,
+          ]
+        }
+        return prev.map((r) =>
+          r.id === found.id
+            ? {
+                ...r,
+                selfReview: cleaned,
+                selfSubmittedAt: new Date().toISOString(),
+                status: r.status === 'complete' ? r.status : ('self-done' as const),
+              }
+            : r,
+        )
+      })
+      const managerId = people.find((p) => p.id === personId)?.managerId
+      if (managerId) {
+        pushNotification({
+          recipientId: managerId,
+          type: 'people',
+          title: 'Self-review submitted',
+          message: `${session.person.name} submitted ${cycle}`,
+          relatedId: personId,
+        })
+      }
+      return null
+    },
+    [session, people, pushNotification],
+  )
+
+  const submitManagerReview = useCallback(
+    (reviewId: string, text: string, rating: number) => {
+      if (!session || !canAct(session.person.role, ['tl', 'admin', 'hr'])) {
+        return 'Only a manager, Admin, or HR can submit this review'
+      }
+      const cleaned = sanitizeText(text, 2000)
+      if (!cleaned) return 'Manager review notes are required'
+      const target = reviews.find((r) => r.id === reviewId)
+      if (!target) return 'Review not found'
+      if (
+        session.person.role === 'tl' &&
+        target.managerId &&
+        target.managerId !== session.person.id
+      ) {
+        return 'You can only review your own reports'
+      }
+      setReviews((prev) =>
+        prev.map((r) =>
+          r.id === reviewId
+            ? {
+                ...r,
+                managerReview: cleaned,
+                managerSubmittedAt: new Date().toISOString(),
+                rating: clampNumber(rating, 1, 5),
+                status: 'complete' as const,
+                managerId: r.managerId || session.person.id,
+              }
+            : r,
+        ),
+      )
+      pushNotification({
+        recipientId: target.personId,
+        type: 'people',
+        title: 'Manager review completed',
+        message: `${target.cycle} review is complete`,
+        relatedId: reviewId,
+      })
+      return null
+    },
+    [session, reviews, pushNotification],
+  )
+
+  const allotAsset = useCallback(
+    (input: { personId: string; kind: AssetKind; label: string; serial?: string }) => {
+      if (!session || !canAct(session.person.role, ['hr'])) return 'Only HR can allot IT assets'
+      const label = sanitizeText(input.label, 80)
+      if (!label) return 'Asset label is required'
+      setAssets((prev) => [
+        {
+          id: uid('ast'),
+          personId: input.personId,
+          kind: input.kind,
+          label,
+          serial: input.serial ? sanitizeText(input.serial, 40) : undefined,
+          status: 'allotted',
+          allottedAt: todayISO(),
+          allottedBy: session.person.id,
+        },
+        ...prev,
+      ])
+      return null
+    },
+    [session],
+  )
+
+  const closeAsset = useCallback(
+    (assetId: string, next: 'returned' | 'revoked') => {
+      if (!session || !canAct(session.person.role, ['hr'])) return 'Only HR can update assets'
+      const asset = assets.find((a) => a.id === assetId)
+      if (!asset) return 'Asset not found'
+      if (asset.status !== 'allotted') return 'This asset is already closed'
+      const closedAt = todayISO()
+      setAssets((prev) =>
+        prev.map((a) =>
+          a.id === assetId ? { ...a, status: next, returnedAt: closedAt } : a,
+        ),
+      )
+      const checklistLabel =
+        asset.kind === 'laptop'
+          ? 'Laptop returned'
+          : asset.kind === 'id-card'
+            ? 'ID card returned'
+            : asset.kind === 'vpn'
+              ? 'VPN access revoked'
+              : null
+      if (checklistLabel) {
+        setChecklists((prev) => {
+          const exists = prev.some((c) => c.personId === asset.personId && c.kind === 'offboarding')
+          const base = exists ? prev : [...prev, makeChecklist(asset.personId, 'offboarding')]
+          return base.map((c) => {
+            if (c.personId !== asset.personId || c.kind !== 'offboarding') return c
+            return {
+              ...c,
+              items: c.items.map((item) =>
+                item.label === checklistLabel
+                  ? {
+                      ...item,
+                      done: true,
+                      doneAt: new Date().toISOString(),
+                      doneBy: session.person.id,
+                    }
+                  : item,
+              ),
+            }
+          })
+        })
+      }
+      pushNotification({
+        recipientId: asset.personId,
+        type: 'people',
+        title: next === 'returned' ? 'Asset returned' : 'Asset revoked',
+        message: `${asset.label} marked ${next}`,
+        relatedId: assetId,
+      })
+      return null
+    },
+    [session, assets, pushNotification],
+  )
+
+  const grantToolAccess = useCallback(
+    (personId: string, name: string) => {
+      if (!session || !canAct(session.person.role, ['hr'])) return 'Only HR can grant tool access'
+      const tool = sanitizeText(name, 40)
+      if (!tool) return 'Tool name is required'
+      setAccessGrants((prev) => [
+        {
+          id: uid('acc'),
+          personId,
+          scope: 'tool',
+          name: tool,
+          status: 'active',
+          grantedAt: todayISO(),
+        },
+        ...prev,
+      ])
+      return null
+    },
+    [session],
+  )
+
+  const revokeAccessGrant = useCallback(
+    (grantId: string) => {
+      if (!session || !canAct(session.person.role, ['hr'])) return
+      setAccessGrants((prev) =>
+        prev.map((g) =>
+          g.id === grantId ? { ...g, status: 'revoked' as const, revokedAt: todayISO() } : g,
+        ),
+      )
+    },
+    [session],
+  )
+
+  const uploadPayslip = useCallback(
+    (input: { personId: string; month: string; fileName: string; dataUrl: string }) => {
+      if (!session || !canAct(session.person.role, ['hr'])) return 'Only HR can upload payslips'
+      if (!/^\d{4}-\d{2}$/.test(input.month)) return 'Use YYYY-MM for the payslip month'
+      if (!isSafeAttachmentName(input.fileName) || !input.fileName.toLowerCase().endsWith('.pdf')) {
+        return 'Upload a PDF file'
+      }
+      const dataUrl = sanitizePdfDataUrl(input.dataUrl)
+      if (!dataUrl) return 'PDF must be a valid file under 2 MB'
+      setPayslips((prev) => [
+        {
+          id: uid('pay'),
+          personId: input.personId,
+          month: input.month,
+          fileName: sanitizeText(input.fileName, 120),
+          dataUrl,
+          uploadedAt: new Date().toISOString(),
+          uploadedBy: session.person.id,
+        },
+        ...prev,
+      ])
+      pushNotification({
+        recipientId: input.personId,
+        type: 'people',
+        title: 'Payslip available',
+        message: `HR uploaded ${input.month} payslip`,
+        relatedId: input.personId,
+      })
+      return null
+    },
+    [session, pushNotification],
+  )
+
+  const raiseHrTicket = useCallback(
+    (subject: string, message: string) => {
+      if (!session || (session.person.role !== 'user' && session.person.role !== 'tl')) {
+        return 'Only employees can raise HR tickets'
+      }
+      const sub = sanitizeText(subject, 120)
+      const body = sanitizeText(message, 2000)
+      if (!sub || !body) return 'Subject and message are required'
+      const ticket: HrTicket = {
+        id: uid('hrt'),
+        fromUserId: session.person.id,
+        fromUserName: session.person.name,
+        subject: sub,
+        message: body,
+        status: 'open',
+        createdAt: new Date().toISOString(),
+      }
+      setHrTickets((prev) => [ticket, ...prev])
+      people
+        .filter((p) => p.role === 'hr')
+        .forEach((p) => {
+          pushNotification({
+            recipientId: p.id,
+            type: 'hr-ticket',
+            title: `HR ticket from ${session.person.name}`,
+            message: sub,
+            relatedId: ticket.id,
+          })
+        })
+      return null
+    },
+    [session, people, pushNotification],
+  )
+
+  const replyHrTicket = useCallback(
+    (ticketId: string, reply: string) => {
+      if (!session || !canAct(session.person.role, ['hr'])) return 'Only HR can reply to these tickets'
+      const cleaned = sanitizeText(reply, 2000)
+      if (!cleaned) return 'Reply is required'
+      const target = hrTickets.find((t) => t.id === ticketId)
+      setHrTickets((prev) =>
+        prev.map((t) =>
+          t.id === ticketId
+            ? {
+                ...t,
+                status: 'answered' as const,
+                reply: cleaned,
+                repliedBy: session.person.id,
+                repliedAt: new Date().toISOString(),
+              }
+            : t,
+        ),
+      )
+      if (target) {
+        pushNotification({
+          recipientId: target.fromUserId,
+          type: 'hr-ticket',
+          title: 'HR replied to your ticket',
+          message: target.subject,
+          relatedId: ticketId,
+        })
+      }
+      return null
+    },
+    [session, hrTickets, pushNotification],
+  )
+
+  const requestRegularization = useCallback(
+    (date: string, reason: string) => {
+      if (!session || (session.person.role !== 'user' && session.person.role !== 'tl')) {
+        return 'Only employees can request regularization'
+      }
+      const cleaned = sanitizeText(reason, 1000)
+      if (!date || !cleaned) return 'Date and reason are required'
+      if (
+        regularizations.some(
+          (r) => r.userId === session.person.id && r.date === date && r.status !== 'rejected',
+        )
+      ) {
+        return 'A regularization request already exists for that date'
+      }
+      const item: RegularizationRequest = {
+        id: uid('reg'),
+        userId: session.person.id,
+        userName: session.person.name,
+        date: sanitizeText(date, 12),
+        reason: cleaned,
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      }
+      setRegularizations((prev) => [item, ...prev])
+      notifyRecipients(orgAdminIds, pushNotification, {
+        type: 'worked-day',
+        title: 'Attendance regularization',
+        message: `${session.person.name} · ${date}`,
+        relatedId: item.id,
+      })
+      return null
+    },
+    [session, regularizations, orgAdminIds, pushNotification],
+  )
+
+  const decideRegularization = useCallback(
+    (requestId: string, decision: 'approve' | 'reject') => {
+      if (!session || !canAct(session.person.role, ['admin', 'hr'])) return
+      const target = regularizations.find((r) => r.id === requestId)
+      if (!target || target.status !== 'pending') return
+      setRegularizations((prev) =>
+        prev.map((r) =>
+          r.id === requestId
+            ? {
+                ...r,
+                status: decision === 'approve' ? 'approved' : 'rejected',
+                decidedBy: session.person.id,
+                decidedByName: session.person.name,
+              }
+            : r,
+        ),
+      )
+      if (decision === 'approve') {
+        setUpdates((prev) => [
+          {
+            id: uid('upd'),
+            projectId: projects.find((p) => p.allocations.some((a) => a.userId === target.userId))?.id || '',
+            userId: target.userId,
+            userName: target.userName,
+            date: target.date,
+            submittedAt: new Date().toISOString(),
+            workDone: `Attendance regularized by ${session.person.name}. ${target.reason}`,
+            workPoints: [`Attendance regularized — ${target.reason}`],
+            hoursSpent: 0,
+            slot: 'evening',
+            markedWorked: true,
+          },
+          ...prev,
+        ])
+        queueChannelPost('Regularization approved', `${target.userName} · ${target.date}`)
+      }
+      pushNotification({
+        recipientId: target.userId,
+        type: 'worked-day',
+        title:
+          decision === 'approve' ? 'Attendance regularized' : 'Regularization declined',
+        message: `${session.person.name} · ${target.date}`,
+        relatedId: requestId,
+      })
+    },
+    [session, regularizations, projects, pushNotification, queueChannelPost],
+  )
+
+  const setPersonShift = useCallback(
+    (personId: string, shiftId: string) => {
+      if (!session || !canAct(session.person.role, ['hr', 'admin'])) return
+      setPeople((prev) => prev.map((p) => (p.id === personId ? { ...p, shiftId } : p)))
+    },
+    [session],
+  )
+
+  const upsertRoster = useCallback(
+    (personId: string, date: string, shiftId: string) => {
+      if (!session || !canAct(session.person.role, ['hr', 'admin'])) return
+      setRoster((prev) => {
+        const found = prev.find((r) => r.personId === personId && r.date === date)
+        if (found) return prev.map((r) => (r.id === found.id ? { ...r, shiftId } : r))
+        return [{ id: uid('ros'), personId, date, shiftId }, ...prev]
+      })
+    },
+    [session],
+  )
+
+  const saveIntegrations = useCallback(
+    (input: ChannelIntegrations) => {
+      if (!session || !isOrgAdmin(session.person.role)) return 'Only Admin or HR can save integrations'
+      setIntegrations({
+        slackEnabled: Boolean(input.slackEnabled),
+        slackWebhook: httpsWebhook(input.slackWebhook),
+        teamsEnabled: Boolean(input.teamsEnabled),
+        teamsWebhook: httpsWebhook(input.teamsWebhook),
+      })
+      return null
+    },
+    [session],
+  )
+
+  const updateHrProfile = useCallback(
+    (
+      personId: string,
+      input: {
+        managerId?: string
+        skills?: string[]
+        department?: string
+        location?: string
+        jobTitle?: string
+        contractEndDate?: string
+        nextAppraisalDate?: string
+        documentExpiryDate?: string
+        probationEndDate?: string
+      },
+    ) => {
+      if (!session || !isOrgAdmin(session.person.role)) return 'Only Admin or HR can update this profile'
+      setPeople((prev) =>
+        prev.map((p) =>
+          p.id === personId
+            ? {
+                ...p,
+                managerId: input.managerId || undefined,
+                skills: input.skills?.map((s) => sanitizeText(s, 40)).filter(Boolean).slice(0, 8) ?? p.skills,
+                department: input.department ? sanitizeText(input.department, 80) : p.department,
+                location: input.location ? sanitizeText(input.location, 80) : p.location,
+                jobTitle: input.jobTitle ? sanitizeText(input.jobTitle, 80) : p.jobTitle,
+                contractEndDate: input.contractEndDate || p.contractEndDate,
+                nextAppraisalDate: input.nextAppraisalDate || p.nextAppraisalDate,
+                documentExpiryDate: input.documentExpiryDate || p.documentExpiryDate,
+                probationEndDate: input.probationEndDate || p.probationEndDate,
+              }
+            : p,
+        ),
+      )
+      return null
+    },
+    [session],
   )
 
   const leaveStats = useMemo(() => {
@@ -2021,6 +2900,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
     requestWorkedDay,
     requestLateMorning,
     decideWorkedDay,
+    checklists,
+    reviews,
+    assets,
+    accessGrants,
+    payslips,
+    hrTickets,
+    regularizations,
+    roster,
+    integrations,
+    channelPosts,
+    historicalExits,
+    toggleChecklistItem,
+    startOffboarding,
+    completeOffboarding,
+    extendEmploymentPeriod,
+    confirmProbation,
+    submitSelfReview,
+    submitManagerReview,
+    allotAsset,
+    closeAsset,
+    grantToolAccess,
+    revokeAccessGrant,
+    uploadPayslip,
+    raiseHrTicket,
+    replyHrTicket,
+    requestRegularization,
+    decideRegularization,
+    setPersonShift,
+    upsertRoster,
+    saveIntegrations,
+    updateHrProfile,
+    directoryFocusId,
+    openDirectoryPerson,
+    clearDirectoryFocus,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
