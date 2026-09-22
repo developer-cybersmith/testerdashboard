@@ -11,6 +11,20 @@ export function isOrgAdmin(role?: Role) {
   return role === 'admin' || role === 'hr'
 }
 
+export function isContractStaff(person: { role: Role }) {
+  return person.role === 'user' || person.role === 'tl'
+}
+
+export function canViewDirectoryPerson(
+  viewer: { id: string; role: Role } | undefined,
+  target: { id: string; role: Role },
+) {
+  if (!viewer) return false
+  if (viewer.id === target.id) return true
+  if (viewer.role === 'user') return target.role !== 'admin' && target.role !== 'hr'
+  return true
+}
+
 export function canAct(actor: Role | undefined, allowed: Role[]) {
   return !!actor && allowed.includes(actor)
 }

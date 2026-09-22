@@ -1,29 +1,37 @@
-import { useState } from 'react'
 import { useApp } from '../../context/AppContext'
-import FilterSelect from '../FilterSelect'
 import { Card } from '../ui'
-import {
-  employmentPeriodOptions,
-  getEmploymentForPeriod,
-  type DashPeriod,
-} from '../../data/periodData'
+
+function currentPeople(people: { lifecycleStatus?: string; status?: string; employmentType?: string }[]) {
+  return people.filter((p) => p.lifecycleStatus !== 'exited' && p.status !== 'inactive')
+}
+
+function typeCount(
+  people: { employmentType?: string }[],
+  matcher: (type: string) => boolean,
+) {
+  return people.filter((p) => matcher((p.employmentType || 'Full-Time').toLowerCase())).length
+}
 
 export function EmploymentMetricStrip() {
-  const { leaveStats } = useApp()
-  const [period, setPeriod] = useState<DashPeriod>('this-month')
-  const employment = getEmploymentForPeriod(period)
+  const { people, leaveStats, updates } = useApp()
+  const current = currentPeople(people)
+  const hasAttendance = updates.length > 0
 
   const cards = [
     {
       title: 'Total Employees',
-      value: String(employment.totalEmployees),
-      footer: "You're part of a growing team!",
+      value: String(current.length),
+      footer: current.length
+        ? 'Current people in the directory'
+        : 'Headcount appears as employees are added',
     },
     {
       title: 'Attendance',
-      value: `${employment.attendancePct}%`,
-      sub: `Present · ${employment.daysOff} Days Off`,
-      footer: `${employment.presentDays} working days tracked`,
+      value: '—',
+      sub: hasAttendance ? 'From daily updates' : 'No attendance logged yet',
+      footer: hasAttendance
+        ? `${updates.length} daily updates on record`
+        : 'Fills after testers log daily work',
     },
     {
       title: 'Leave Requests',
@@ -33,22 +41,14 @@ export function EmploymentMetricStrip() {
     },
     {
       title: 'Team Growth',
-      value: `+${employment.applicantsGrowthPct}%`,
+      value: '—',
       sub: 'New applicants trend',
-      footer: `${employment.newApplicants} new applicants`,
+      footer: 'Fills after HR adds employees',
     },
   ]
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-end">
-        <FilterSelect
-          value={period}
-          options={employmentPeriodOptions}
-          onChange={setPeriod}
-          ariaLabel="Employment period filter"
-        />
-      </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {cards.map((c) => (
           <Card key={c.title} className="!p-0 overflow-hidden">
@@ -68,54 +68,51 @@ export function EmploymentMetricStrip() {
 }
 
 export function EmploymentStatusCard() {
-  const { employment: base } = useApp()
-  const [period, setPeriod] = useState<DashPeriod>('this-month')
-  const employment = getEmploymentForPeriod(period)
-  const total = employment.totalEmployees || base.totalEmployees
+  const { people } = useApp()
+  const current = currentPeople(people)
+  const total = current.length
   const segments = [
-    { label: 'Full-Time', count: employment.fullTime, color: '#0b4f3c' },
-    { label: 'Part-Time', count: employment.partTime, color: '#14b8a6' },
-    { label: 'Contract', count: employment.contract, color: '#7ddea8' },
-    { label: 'Intern', count: employment.intern, color: '#d4edd9' },
+    { label: 'Full-Time', count: typeCount(current, (t) => t.includes('full')), color: '#0b4f3c' },
+    { label: 'Part-Time', count: typeCount(current, (t) => t.includes('part')), color: '#14b8a6' },
+    { label: 'Contract', count: typeCount(current, (t) => t.includes('contract')), color: '#7ddea8' },
+    { label: 'Intern', count: typeCount(current, (t) => t.includes('intern')), color: '#d4edd9' },
   ]
 
   return (
     <Card>
       <div className="mb-4 flex items-center justify-between gap-2">
         <h3 className="text-[16px] font-semibold text-cs-ink">Employment Status</h3>
-        <div className="flex items-center gap-2">
-          <span className="rounded-full bg-[#edf7f1] px-3 py-1 text-[12px] font-semibold text-cs-forest">
-            {total} Employees
-          </span>
-          <FilterSelect
-            value={period}
-            options={employmentPeriodOptions}
-            onChange={setPeriod}
-            ariaLabel="Employment status period"
-          />
-        </div>
+        <span className="rounded-full bg-[#edf7f1] px-3 py-1 text-[12px] font-semibold text-cs-forest">
+          {total} Employees
+        </span>
       </div>
-      <div className="mb-4 flex h-3 overflow-hidden rounded-full">
-        {segments.map((s) => (
-          <div
-            key={s.label}
-            style={{ width: `${(s.count / total) * 100}%`, background: s.color }}
-          />
-        ))}
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        {segments.map((s) => (
-          <div key={s.label} className="flex items-center justify-between gap-2">
-            <span className="flex items-center gap-2 text-[13px] text-cs-ink">
-              <span className="h-2.5 w-2.5 rounded-full" style={{ background: s.color }} />
-              {s.label}
-            </span>
-            <span className="text-[12px] font-semibold text-cs-muted">
-              {Math.round((s.count / total) * 100)}% · {s.count}
-            </span>
+      {total === 0 ? (
+        <p className="py-4 text-center text-[13px] text-cs-muted">No employees on roll yet.</p>
+      ) : (
+        <>
+          <div className="mb-4 flex h-3 overflow-hidden rounded-full">
+            {segments.map((s) => (
+              <div
+                key={s.label}
+                style={{ width: `${(s.count / total) * 100}%`, background: s.color }}
+              />
+            ))}
           </div>
-        ))}
-      </div>
+          <div className="grid grid-cols-2 gap-3">
+            {segments.map((s) => (
+              <div key={s.label} className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-2 text-[13px] text-cs-ink">
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ background: s.color }} />
+                  {s.label}
+                </span>
+                <span className="text-[12px] font-semibold text-cs-muted">
+                  {Math.round((s.count / total) * 100)}% · {s.count}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </Card>
   )
 }

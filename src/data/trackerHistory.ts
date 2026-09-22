@@ -25,12 +25,8 @@ function eachDate(from: string, to: string) {
 }
 
 const PROJECT_BY_USER: Record<string, string> = {
-  'user-1': 'proj-101',
-  'user-2': 'proj-101',
-  'user-3': 'proj-102',
-  'user-4': 'proj-102',
-  'tl-1': 'proj-101',
-  'tl-2': 'proj-102',
+  'admin-2': 'proj-101',
+  'admin-1': 'proj-102',
 }
 
 /**

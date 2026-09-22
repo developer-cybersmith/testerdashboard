@@ -111,7 +111,7 @@ import {
   storeSession,
 } from '../lib/api'
 
-export { isOrgAdmin } from '../security/authorize'
+export { isOrgAdmin, isContractStaff, canViewDirectoryPerson } from '../security/authorize'
 export { isLateMorningGateway, slotFromUpdate } from '../attendance'
 export {
   ALL_LEAVE_MAX,
@@ -121,10 +121,11 @@ export {
   SICK_LEAVE_MAX,
 } from '../hr/peopleOps'
 export const DEMO_PASSWORD = 'Secure@2026'
-export const COMPANY_DOMAIN = 'cybersmith.secure.com'
+export const COMPANY_DOMAIN = 'cybersmithsecure.com'
 export const OFFICE_LOCATIONS = [
-  'Gurugram',
   'Mumbai',
+  'Pune',
+  'Gurugram',
   'Bengaluru',
   'Kolkata',
   'Ahmedabad',
@@ -556,18 +557,26 @@ export function normalizeCompanyEmail(raw: string, domain = COMPANY_DOMAIN) {
 
 export function normalizeEmployeeCode(raw: string) {
   const cleaned = sanitizeText(raw, 16).toUpperCase().replace(/\s+/g, '')
-  const digits = cleaned.replace(/^EMP-?/, '').replace(/\D/g, '')
+  const match = cleaned.match(/^(CSS|EMP)-?(\d+)$/) || cleaned.match(/^(\d+)$/)
+  if (match && match.length === 3) {
+    const prefix = match[1] === 'EMP' ? 'EMP' : 'CSS'
+    return `${prefix}${match[2].padStart(3, '0')}`
+  }
+  if (match && match.length === 2) {
+    return `CSS${match[1].padStart(3, '0')}`
+  }
+  const digits = cleaned.replace(/\D/g, '')
   if (!digits) return ''
-  return `EMP-${digits.padStart(3, '0')}`
+  return `CSS${digits.padStart(3, '0')}`
 }
 
 export function nextEmployeeCode(people: { employeeCode?: string }[]) {
   const nums = people.map((p) => {
-    const match = (p.employeeCode || '').match(/EMP-(\d+)/i)
-    return match ? Number(match[1]) : 0
+    const found = (p.employeeCode || '').match(/(?:CSS|EMP)-?(\d+)/i)
+    return found ? Number(found[1]) : 0
   })
   const next = Math.max(0, ...nums) + 1
-  return `EMP-${String(next).padStart(3, '0')}`
+  return `CSS${String(next).padStart(3, '0')}`
 }
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -840,7 +849,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!name) return 'Name is required'
       if (!isStrongPassword(password)) return PASSWORD_POLICY
       const employeeCode = normalizeEmployeeCode(input.employeeCode || nextEmployeeCode(people))
-      if (!employeeCode) return 'Employee ID is required (e.g. EMP-001)'
+      if (!employeeCode) return 'Employee ID is required (e.g. CSS001)'
       if (people.some((p) => (p.employeeCode || '').toUpperCase() === employeeCode)) {
         return 'That employee ID is already in use'
       }
@@ -1501,7 +1510,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return 'Only Admin can change employee IDs'
       }
       const code = normalizeEmployeeCode(employeeCode)
-      if (!code) return 'Use a code like EMP-001'
+      if (!code) return 'Use a code like CSS001'
       const taken = people.some(
         (p) => p.id !== personId && (p.employeeCode || '').toUpperCase() === code,
       )
@@ -1891,7 +1900,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ? p.tlId === session.person.id
           : p.allocations.some((a) => a.userId === session.person.id),
       )
-      const tlId = isTlSelf ? session.person.id : myProj?.tlId || 'tl-1'
+      const tlId = isTlSelf ? session.person.id : myProj?.tlId || 'admin-2'
       const leave: LeaveRequest = {
         id: uid('lv'),
         userId: session.person.id,
@@ -2623,6 +2632,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const allotAsset = useCallback(
     (input: { personId: string; kind: AssetKind; label: string; serial?: string }) => {
       if (!session || !canAct(session.person.role, ['hr'])) return 'Only HR can allot IT assets'
+      const holder = people.find((p) => p.id === input.personId)
+      if (!holder || holder.role === 'admin') return 'Allot assets to testers and team leaders only'
       const label = sanitizeText(input.label, 80)
       if (!label) return 'Asset label is required'
       setAssets((prev) => [
@@ -2640,7 +2651,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ])
       return null
     },
-    [session],
+    [session, people],
   )
 
   const closeAsset = useCallback(
@@ -2733,6 +2744,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const uploadPayslip = useCallback(
     (input: { personId: string; month: string; fileName: string; dataUrl: string }) => {
       if (!session || !canAct(session.person.role, ['hr'])) return 'Only HR can upload payslips'
+      const holder = people.find((p) => p.id === input.personId)
+      if (!holder || holder.role === 'admin') return 'Payslips are for testers and team leaders only'
       if (!/^\d{4}-\d{2}$/.test(input.month)) return 'Use YYYY-MM for the payslip month'
       if (!isSafeAttachmentName(input.fileName) || !input.fileName.toLowerCase().endsWith('.pdf')) {
         return 'Upload a PDF file'
@@ -2760,7 +2773,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       })
       return null
     },
-    [session, pushNotification],
+    [session, people, pushNotification],
   )
 
   const raiseHrTicket = useCallback(

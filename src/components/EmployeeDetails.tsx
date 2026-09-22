@@ -215,7 +215,7 @@ export default function EmployeeDetails({ person }: { person: Person }) {
                   className={inputClass}
                   value={code}
                   onChange={(e) => setCode(e.target.value.toUpperCase())}
-                  placeholder="EMP-001"
+                  placeholder="CSS001"
                 />
               </Field>
               <PrimaryButton type="submit" className="!py-2">
@@ -309,6 +309,15 @@ export default function EmployeeDetails({ person }: { person: Person }) {
           <div className="mb-3 flex items-start justify-between gap-3">
             <div>
               <p className="text-[12px] text-cs-muted">Performance Overview</p>
+              {series.length === 0 ? (
+                <>
+                  <p className="text-[28px] font-bold leading-none text-cs-ink">—</p>
+                  <p className="mt-1 text-[12px] font-semibold text-cs-muted">
+                    No performance yet. This chart fills from attendance and daily work.
+                  </p>
+                </>
+              ) : (
+                <>
               <p className="text-[28px] font-bold leading-none text-cs-ink">{life.score.toFixed(1)}%</p>
               <p className="mt-1 text-[12px] font-semibold text-cs-muted">
                 Attendance + daily work from join date
@@ -327,9 +336,17 @@ export default function EmployeeDetails({ person }: { person: Person }) {
               {thisMonth && (
                 <p className="mt-1 text-[12px] text-cs-muted">This month so far {thisMonth.value}%</p>
               )}
+                </>
+              )}
             </div>
-            <Badge tone="forest">{life.months} month{life.months === 1 ? '' : 's'} kept</Badge>
+            {series.length > 0 && (
+              <Badge tone="forest">{life.months} month{life.months === 1 ? '' : 's'} kept</Badge>
+            )}
           </div>
+          {series.length === 0 ? (
+            <p className="py-8 text-center text-[13px] text-cs-muted">Waiting for daily updates.</p>
+          ) : (
+          <>
           <div className="relative">
             <svg
               viewBox={`0 0 ${chart.w} ${chart.h}`}
@@ -368,6 +385,8 @@ export default function EmployeeDetails({ person }: { person: Person }) {
             Each month is the average of that month’s working days (present / half day / hours logged).
             New daily updates change the current month; earlier months stay on this profile for life.
           </p>
+          </>
+          )}
         </Card>
 
         <Card>
@@ -498,6 +517,8 @@ export default function EmployeeDetails({ person }: { person: Person }) {
               const tone =
                 !onRoll
                   ? 'text-cs-muted/40'
+                  : rec.source === 'none'
+                  ? 'text-cs-muted/50'
                   : mark === 'present'
                   ? 'bg-[#14b8a6] text-white'
                   : mark === 'half'

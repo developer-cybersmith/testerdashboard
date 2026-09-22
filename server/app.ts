@@ -26,7 +26,7 @@ type Env = {
   }
 }
 
-const COMPANY_DOMAIN = 'cybersmith.secure.com'
+const COMPANY_DOMAIN = 'cybersmithsecure.com'
 
 function normalizeCompanyEmail(raw: string) {
   const value = raw.trim().toLowerCase()

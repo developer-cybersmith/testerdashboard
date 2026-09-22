@@ -1,6 +1,9 @@
 ﻿import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   COMPANY_DOMAIN,
+  DEMO_PASSWORD,
+  canViewDirectoryPerson,
+  isContractStaff,
   isOrgAdmin,
   nextEmployeeCode,
   OFFICE_LOCATIONS,
@@ -59,7 +62,7 @@ function AddEmployeeForm() {
   const { people, registerEmployee } = useApp()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
+  const [password, setPassword] = useState(DEMO_PASSWORD)
   const [role, setRole] = useState<Role>('user')
   const [employeeCode, setEmployeeCode] = useState(() => nextEmployeeCode(people))
   const [jobTitle, setJobTitle] = useState('')
@@ -103,7 +106,7 @@ function AddEmployeeForm() {
     setOk(`${name.trim()} was added and started on onboarding.`)
     setName('')
     setEmail('')
-    setPassword('')
+    setPassword(DEMO_PASSWORD)
     setRole('user')
     setEmployeeCode(nextEmployeeCode([...people, { employeeCode }]))
     setJobTitle('')
@@ -212,13 +215,15 @@ function DirectoryTab() {
   const [formError, setFormError] = useState<string | null>(null)
 
   const openId = directoryFocusId || selectedId
+  const visiblePeople = people.filter((p) => canViewDirectoryPerson(session?.person, p))
 
-  const departments = [...new Set(people.map((p) => p.department).filter(Boolean))] as string[]
-  const skills = [...new Set(people.flatMap((p) => p.skills || []))]
-  const selected = people.find((p) => p.id === openId)
+  const departments = [...new Set(visiblePeople.map((p) => p.department).filter(Boolean))] as string[]
+  const skills = [...new Set(visiblePeople.flatMap((p) => p.skills || []))]
+  const selected = visiblePeople.find((p) => p.id === openId)
   const managerName = (id?: string) => personLabel(people.find((p) => p.id === id))
+  const testerView = session?.person.role === 'user'
 
-  const filtered = people.filter((p) => {
+  const filtered = visiblePeople.filter((p) => {
     if (q && !matchesEmployeeSearch(p, q)) return false
     if (department && p.department !== department) return false
     if (location && p.location !== location) return false
@@ -279,8 +284,8 @@ function DirectoryTab() {
           </select>
           <select className={inputClass} value={role} onChange={(e) => setRole(e.target.value)}>
             <option value="">All roles</option>
-            <option value="admin">Admin</option>
-            <option value="hr">HR</option>
+            {!testerView && <option value="admin">Admin</option>}
+            {!testerView && <option value="hr">HR</option>}
             <option value="tl">Team Leader</option>
             <option value="user">Tester</option>
           </select>
@@ -588,7 +593,7 @@ function LifecycleCard({ personId }: { personId: string }) {
 function LifecycleTab() {
   const { people } = useApp()
   const rows = [...people]
-    .filter((p) => p.role === 'user' || p.role === 'tl' || p.lifecycleStatus)
+    .filter((p) => isContractStaff(p))
     .sort(
       (a, b) =>
         (LIFECYCLE_RANK[a.lifecycleStatus || 'confirmed'] ?? 9) -
@@ -597,9 +602,11 @@ function LifecycleTab() {
 
   return (
     <div className="space-y-4">
-      {rows.map((person) => (
-        <LifecycleCard key={person.id} personId={person.id} />
-      ))}
+      {rows.length === 0 ? (
+        <EmptyState text="Lifecycle tracking starts after testers and team leaders are added." />
+      ) : (
+        rows.map((person) => <LifecycleCard key={person.id} personId={person.id} />)
+      )}
     </div>
   )
 }
@@ -612,7 +619,10 @@ function PerformanceTab() {
 
   return (
     <div className="space-y-4">
-      {reviews.map((review) => {
+      {reviews.length === 0 ? (
+        <EmptyState text="No performance reviews yet. Reviews appear after testers and team leaders are added." />
+      ) : (
+      reviews.map((review) => {
         const person = people.find((p) => p.id === review.personId)
         if (!person) return null
         const canManage =
@@ -672,7 +682,8 @@ function PerformanceTab() {
             )}
           </Card>
         )
-      })}
+      })
+      )}
     </div>
   )
 }
@@ -680,7 +691,12 @@ function PerformanceTab() {
 function AssetsTab() {
   const { people, assets, allotAsset, closeAsset, session } = useApp()
   const isHr = session?.person.role === 'hr'
-  const [personId, setPersonId] = useState(people.find((p) => p.role === 'user')?.id || '')
+  const holders = people.filter((p) => isContractStaff(p) && p.lifecycleStatus !== 'exited')
+  const tracked = assets.filter((asset) => {
+    const holder = people.find((p) => p.id === asset.personId)
+    return holder ? isContractStaff(holder) : true
+  })
+  const [personId, setPersonId] = useState(holders[0]?.id || '')
   const [kind, setKind] = useState<AssetKind>('laptop')
   const [label, setLabel] = useState('')
   const [serial, setSerial] = useState('')
@@ -704,9 +720,7 @@ function AssetsTab() {
           <form className="grid gap-3 md:grid-cols-2" onSubmit={submit}>
             <Field label="Employee">
               <select className={inputClass} value={personId} onChange={(e) => setPersonId(e.target.value)}>
-                {people
-                  .filter((p) => p.lifecycleStatus !== 'exited')
-                  .map((p) => (
+                {holders.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
                     </option>
@@ -735,8 +749,11 @@ function AssetsTab() {
       <Card>
         <SectionTitle title="Asset tracker" />
         {error && <p className="mb-2 text-[12px] font-semibold text-red-600">{error}</p>}
+        {tracked.length === 0 ? (
+          <EmptyState text="No IT assets allotted yet. Testers and team leaders appear here after HR allots equipment." />
+        ) : (
         <ul className="space-y-2">
-          {assets.map((asset) => {
+          {tracked.map((asset) => {
             const holder = people.find((p) => p.id === asset.personId)
             return (
               <li key={asset.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-cs-line px-3 py-2">
@@ -772,6 +789,7 @@ function AssetsTab() {
             )
           })}
         </ul>
+        )}
       </Card>
     </div>
   )
@@ -780,7 +798,12 @@ function AssetsTab() {
 function PayslipsTab() {
   const { people, payslips, uploadPayslip, session } = useApp()
   const isHr = session?.person.role === 'hr'
-  const [personId, setPersonId] = useState(people.find((p) => p.role === 'user')?.id || '')
+  const recipients = people.filter((p) => isContractStaff(p) && p.lifecycleStatus !== 'exited')
+  const slips = payslips.filter((slip) => {
+    const holder = people.find((p) => p.id === slip.personId)
+    return holder ? isContractStaff(holder) : true
+  })
+  const [personId, setPersonId] = useState(recipients[0]?.id || '')
   const [month, setMonth] = useState('2026-09')
   const [error, setError] = useState<string | null>(null)
 
@@ -808,9 +831,7 @@ function PayslipsTab() {
           <div className="grid gap-3 md:grid-cols-3">
             <Field label="Employee">
               <select className={inputClass} value={personId} onChange={(e) => setPersonId(e.target.value)}>
-                {people
-                  .filter((p) => p.role === 'user' || p.role === 'tl')
-                  .map((p) => (
+                {recipients.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
                     </option>
@@ -834,11 +855,11 @@ function PayslipsTab() {
       )}
       <Card>
         <SectionTitle title="Uploaded payslips" />
-        {payslips.length === 0 ? (
+        {slips.length === 0 ? (
           <EmptyState text="No payslips yet." />
         ) : (
           <ul className="space-y-2">
-            {payslips.map((slip) => (
+            {slips.map((slip) => (
               <li key={slip.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-cs-line px-3 py-2">
                 <p className="text-[13px] font-semibold text-cs-ink">
                   {people.find((p) => p.id === slip.personId)?.name} · {slip.month}

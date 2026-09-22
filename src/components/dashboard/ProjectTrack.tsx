@@ -219,7 +219,7 @@ export function TaskOverviewCard() {
     },
     { todo: 0, inProgress: 0, done: 0 },
   )
-  const total = summary.todo + summary.inProgress + summary.done || 1
+  const total = summary.todo + summary.inProgress + summary.done
 
   return (
     <Card className="overflow-visible">
@@ -238,6 +238,12 @@ export function TaskOverviewCard() {
         </div>
       </div>
 
+      {projects.length === 0 ? (
+        <p className="py-6 text-center text-[13px] text-cs-muted">
+          No tasks yet. Overview fills in when projects and daily work exist.
+        </p>
+      ) : (
+        <>
       <div className="mb-4 grid grid-cols-3 gap-2">
         {[
           { label: 'To Do', count: summary.todo, color: '#f5c542' },
@@ -295,6 +301,8 @@ export function TaskOverviewCard() {
           )
         })}
       </ul>
+        </>
+      )}
     </Card>
   )
 }

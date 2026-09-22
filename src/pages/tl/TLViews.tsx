@@ -429,7 +429,12 @@ export function TLActiveProjects() {
       )}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {activeProjects.map((p) => {
+        {activeProjects.length === 0 ? (
+          <div className="md:col-span-2 xl:col-span-3">
+            <EmptyState text="No active projects yet. Create a project after testers and team leaders are added." />
+          </div>
+        ) : (
+        activeProjects.map((p) => {
           const tlPerson = people.find((x) => x.id === p.tlId)
           const tlName = personLabel(tlPerson)
           return (
@@ -477,7 +482,8 @@ export function TLActiveProjects() {
               </div>
             </Card>
           )
-        })}
+        })
+        )}
       </div>
       {viewProjectId && activeProjects.find((p) => p.id === viewProjectId) && (
         <ProjectDetailModal
