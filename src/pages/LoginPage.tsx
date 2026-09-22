@@ -14,9 +14,9 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  const submit = (e: FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault()
-    const result = loginWithEmail(email, password)
+    const result = await loginWithEmail(email, password)
     setError(result)
   }
 
