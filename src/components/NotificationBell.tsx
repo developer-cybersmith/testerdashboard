@@ -25,6 +25,8 @@ const typeLabel: Record<string, string> = {
   'peer-review': 'Update',
   'worked-day': 'Attendance',
   lifecycle: 'Project',
+  'hr-ticket': 'HR desk',
+  people: 'People',
 }
 
 export default function NotificationBell({

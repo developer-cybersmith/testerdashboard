@@ -3,6 +3,7 @@ import { Camera } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { PASSWORD_POLICY } from '../security/wstg'
 import { Card, Field, PrimaryButton, inputClass } from './ui'
+import EmployeeSelfService from './hr/EmployeeSelfService'
 
 export default function TesterProfile() {
   const { session, updateOwnProfile, changePassword } = useApp()
@@ -194,6 +195,7 @@ export default function TesterProfile() {
           <PrimaryButton type="submit">Change password</PrimaryButton>
         </form>
       </Card>
+      <EmployeeSelfService />
     </div>
   )
 }

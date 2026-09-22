@@ -9,7 +9,7 @@ const csp = (dev: boolean) =>
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src https://fonts.gstatic.com",
     `script-src 'self'${dev ? " 'unsafe-eval' 'unsafe-inline'" : ''}`,
-    "connect-src 'self' ws: wss:",
+    "connect-src 'self' ws: wss: https://*.supabase.co",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -28,7 +28,23 @@ const securityHeaders = (dev: boolean) => ({
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  server: { headers: securityHeaders(true) },
-  preview: { headers: securityHeaders(false) },
+  server: {
+    headers: securityHeaders(true),
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+      },
+    },
+  },
+  preview: {
+    headers: securityHeaders(false),
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+      },
+    },
+  },
 })
 

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   ChevronLeft,
   ChevronRight,
@@ -8,8 +8,26 @@ import {
   Phone,
   Share2,
 } from 'lucide-react'
-import { PAID_LEAVE_MAX, isOrgAdmin, personLabel, roleLabel, useApp } from '../context/AppContext'
-import { dayAttendanceMark } from '../attendance'
+import {
+  CASUAL_LEAVE_MAX,
+  EARNED_LEAVE_MAX,
+  isOrgAdmin,
+  personLabel,
+  roleLabel,
+  SICK_LEAVE_MAX,
+  useApp,
+} from '../context/AppContext'
+import { earnedLeaveMax, lifecycleLabel, remainingLeave } from '../hr/peopleOps'
+import {
+  EXPECTED_DAY_HOURS,
+  fourWeekHours,
+  inTenure,
+  lifetimePerformanceSeries,
+  lifetimeScore,
+  mondayOnOrBefore,
+  profileDayRecord,
+  shiftMonday,
+} from '../hr/workPerformance'
 import type { Person } from '../types'
 import { Badge, Card, Field, PrimaryButton, inputClass } from './ui'
 
@@ -37,15 +55,6 @@ function prettyDate(iso?: string) {
 
 function isoDate(year: number, month: number, day: number) {
   return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-}
-
-function startOfWeek(date: Date) {
-  const d = new Date(date)
-  const day = d.getDay()
-  const diff = day === 0 ? -6 : 1 - day
-  d.setDate(d.getDate() + diff)
-  d.setHours(0, 0, 0, 0)
-  return d
 }
 
 function ringStyle(used: number, max: number) {
@@ -93,24 +102,27 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 export default function EmployeeDetails({ person }: { person: Person }) {
-  const { session, updates, leaveRequests, updateEmployeeCode } = useApp()
-  const [cursor, setCursor] = useState(() => new Date(2026, 7, 1))
+  const { session, updates, leaveRequests, workedDayRequests, updateEmployeeCode, people } = useApp()
+  const [cursor, setCursor] = useState(() => new Date())
+  const [weekMonday, setWeekMonday] = useState(() => mondayOnOrBefore())
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
   const [code, setCode] = useState(person.employeeCode || '')
   const [codeMsg, setCodeMsg] = useState<string | null>(null)
-  const isAdmin = isOrgAdmin(session?.person.role)
-  const score = person.performanceScore ?? 80
-  const leave = person.leaveBalance || {
-    allUsed: 0,
-    allMax: PAID_LEAVE_MAX,
-    annualUsed: 0,
-    annualMax: PAID_LEAVE_MAX,
-    casualUsed: 0,
-    casualMax: 0,
-    sickUsed: 0,
-    sickMax: PAID_LEAVE_MAX,
-  }
 
-  const mine = updates.filter((u) => u.userId === person.id)
+  useEffect(() => {
+    setWeekMonday(mondayOnOrBefore())
+    setCode(person.employeeCode || '')
+    setCodeMsg(null)
+  }, [person.id])
+  const isAdmin = isOrgAdmin(session?.person.role)
+  const canSeeWorkStats =
+    !!session &&
+    (isOrgAdmin(session.person.role) ||
+      session.person.role === 'tl' ||
+      session.person.id === person.id)
+  const extras = { updates, workedDays: workedDayRequests }
+  const earnedMax = earnedLeaveMax(person.id, updates, workedDayRequests)
+  const manager = people.find((p) => p.id === person.managerId)
 
   const year = cursor.getFullYear()
   const month = cursor.getMonth()
@@ -121,41 +133,51 @@ export default function EmployeeDetails({ person }: { person: Person }) {
     i < startPad ? null : i - startPad + 1,
   )
 
-  const weekHours = useMemo(() => {
-    const start = startOfWeek(new Date(2026, 7, 18))
-    const labels = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-    const seed = person.id.split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0)
-    return labels.map((label, index) => {
-      const date = isoDate(start.getFullYear(), start.getMonth(), start.getDate() + index)
-      const logged = mine.filter((u) => u.date === date).reduce((sum, u) => sum + u.hoursSpent, 0)
-      const demo = index >= 5 ? 0 : 5 + ((seed + index * 3) % 4)
-      return { label, hours: logged || demo, date }
-    })
-  }, [mine, person.id])
+  const series = useMemo(
+    () => lifetimePerformanceSeries(person, updates, leaveRequests, workedDayRequests),
+    [person, updates, leaveRequests, workedDayRequests],
+  )
+  const life = lifetimeScore(series)
+  const todayKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`
+  const completed = series.filter((row) => row.key < todayKey)
+  const thisMonth = series.find((row) => row.key === todayKey)
+  const lastComplete = completed[completed.length - 1]
+  const prevComplete = completed.length > 1 ? completed[completed.length - 2] : null
+  const delta =
+    lastComplete && prevComplete ? +(lastComplete.value - prevComplete.value).toFixed(1) : null
 
-  const weekTotal = weekHours.reduce((sum, d) => sum + d.hours, 0)
-  const maxBar = Math.max(8, ...weekHours.map((d) => d.hours))
+  const thisMonday = mondayOnOrBefore()
+  const joinMonday = person.joinDate ? mondayOnOrBefore(new Date(`${person.joinDate}T00:00:00`)) : null
+  const canWeekForward = weekMonday.getTime() < thisMonday.getTime()
+  const earliestMonday = shiftMonday(weekMonday, -3)
+  const canWeekBack = !joinMonday || earliestMonday.getTime() > joinMonday.getTime()
+  const weeks = useMemo(
+    () => fourWeekHours(person, updates, leaveRequests, workedDayRequests, weekMonday),
+    [person, updates, leaveRequests, workedDayRequests, weekMonday.getTime()],
+  )
+  const weeksTotal = weeks.reduce((sum, week) => sum + week.total, 0)
+  const maxBar = Math.max(
+    EXPECTED_DAY_HOURS,
+    ...weeks.flatMap((week) => week.days.map((d) => d.hours)),
+  )
 
   const chart = useMemo(() => {
-    const values = MONTHS.map((_, i) => {
-      const wave = Math.sin(i / 1.6) * 5
-      return Math.max(62, Math.min(98, score - 10 + (i / 11) * 8 + wave))
-    })
     const w = 560
     const h = 160
-    const step = w / (values.length - 1)
-    const y = (v: number) => h - ((v - 60) / 40) * (h - 16)
-    const d = values
-      .map((v, i) => `${i === 0 ? 'M' : 'L'} ${i * step} ${y(v)}`)
-      .join(' ')
-    const area = `${d} L ${w} ${h} L 0 ${h} Z`
-    return { values, d, area, w, h, y, step }
-  }, [score])
-
-  const dayMark = (day: number) => {
-    const date = isoDate(year, month, day)
-    return dayAttendanceMark(updates, leaveRequests, person.id, date)
-  }
+    const pad = 8
+    if (series.length === 0) return { w, h, pts: [] as { x: number; y: number; label: string; value: number }[], d: '', area: '' }
+    const values = series.map((row) => row.value)
+    const min = Math.max(0, Math.min(...values) - 8)
+    const max = Math.min(100, Math.max(...values) + 8)
+    const pts = series.map((row, i) => {
+      const x = series.length === 1 ? w / 2 : pad + (i * (w - pad * 2)) / (series.length - 1)
+      const y = h - pad - ((row.value - min) / (max - min || 1)) * (h - pad * 2)
+      return { x, y, label: row.label, value: row.value }
+    })
+    const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
+    const area = `${d} L ${pts[pts.length - 1].x} ${h} L ${pts[0].x} ${h} Z`
+    return { w, h, pts, d, area }
+  }, [series])
 
   return (
     <div className="grid min-w-0 gap-4 xl:grid-cols-12">
@@ -176,7 +198,7 @@ export default function EmployeeDetails({ person }: { person: Person }) {
               <Badge tone="forest">{person.employeeCode}</Badge>
             )}
             <Badge tone={person.status === 'inactive' ? 'gray' : 'green'}>
-              {person.status === 'inactive' ? 'Inactive' : 'Active'}
+              {person.status === 'inactive' ? 'Inactive' : lifecycleLabel(person.lifecycleStatus)}
             </Badge>
           </div>
           {isAdmin && (
@@ -205,6 +227,7 @@ export default function EmployeeDetails({ person }: { person: Person }) {
           <div className="mt-4 divide-y divide-cs-line text-[13px]">
             <InfoRow label="Employment Type" value={person.employmentType || 'Full-Time'} />
             <InfoRow label="Join Date" value={prettyDate(person.joinDate)} />
+            <InfoRow label="Reporting manager" value={manager ? personLabel(manager) : '—'} />
           </div>
           <div className="mt-4 flex gap-2">
             {[Share2, Globe, Mail].map((Icon, i) => (
@@ -251,63 +274,188 @@ export default function EmployeeDetails({ person }: { person: Person }) {
       <div className="min-w-0 space-y-4 xl:col-span-6">
         <div className="grid min-w-0 gap-3">
           <LeaveStat
-            label="Paid leave (annual / sick)"
-            used={Math.min(PAID_LEAVE_MAX, leave.annualUsed)}
-            max={PAID_LEAVE_MAX}
+            label="Earned Leaves"
+            used={Math.max(0, earnedMax - remainingLeave(person, leaveRequests, 'earned', extras))}
+            max={earnedMax}
+          />
+          <LeaveStat
+            label="Casual Leaves"
+            used={Math.max(0, CASUAL_LEAVE_MAX - remainingLeave(person, leaveRequests, 'casual', extras))}
+            max={CASUAL_LEAVE_MAX}
+          />
+          <LeaveStat
+            label="Sick Leaves"
+            used={Math.max(0, SICK_LEAVE_MAX - remainingLeave(person, leaveRequests, 'sick', extras))}
+            max={SICK_LEAVE_MAX}
           />
           <p className="text-[12px] leading-relaxed text-cs-muted">
-            12 paid leaves per year. Any other leave is decided by the Team Leader and Admin on
-            approval and does not use this quota.
+            {EARNED_LEAVE_MAX} earned plus 1st / 3rd Saturday work credits. Casual and sick ({CASUAL_LEAVE_MAX} each)
+            do not carry to the next year.
           </p>
+          {person.skills?.length ? (
+            <div className="flex flex-wrap gap-1">
+              {person.skills.map((skill) => (
+                <span key={skill} className="rounded-full bg-[#edf7f1] px-2 py-1 text-[11px] font-semibold text-cs-forest">
+                  {skill}
+                </span>
+              ))}
+            </div>
+          ) : null}
         </div>
 
+        {canSeeWorkStats && (
+        <>
         <Card>
           <div className="mb-3 flex items-start justify-between gap-3">
             <div>
               <p className="text-[12px] text-cs-muted">Performance Overview</p>
-              <p className="text-[28px] font-bold leading-none text-cs-ink">{score.toFixed(2)}%</p>
-              <p className="mt-1 text-[12px] font-semibold text-emerald-600">
-                +2.01% increased by last year
+              <p className="text-[28px] font-bold leading-none text-cs-ink">{life.score.toFixed(1)}%</p>
+              <p className="mt-1 text-[12px] font-semibold text-cs-muted">
+                Attendance + daily work from join date
+                {person.joinDate ? ` · since ${prettyDate(person.joinDate)}` : ''}
               </p>
+              {delta != null && lastComplete && (
+                <p
+                  className={`mt-1 text-[12px] font-semibold ${
+                    delta >= 0 ? 'text-emerald-600' : 'text-red-600'
+                  }`}
+                >
+                  {delta >= 0 ? '+' : ''}
+                  {delta}% vs {prevComplete?.label} · last full month {lastComplete.value}%
+                </p>
+              )}
+              {thisMonth && (
+                <p className="mt-1 text-[12px] text-cs-muted">This month so far {thisMonth.value}%</p>
+              )}
             </div>
-            <Badge tone="forest">Avg 2025 {(score - 6).toFixed(1)}%</Badge>
+            <Badge tone="forest">{life.months} month{life.months === 1 ? '' : 's'} kept</Badge>
           </div>
-          <svg viewBox={`0 0 ${chart.w} ${chart.h}`} className="h-40 w-full">
-            <path d={chart.area} fill="#d4edd9" />
-            <path d={chart.d} fill="none" stroke="#0b4f3c" strokeWidth="3" />
-            {chart.values.map((v, i) => (
-              <circle key={MONTHS[i]} cx={i * chart.step} cy={chart.y(v)} r="3.5" fill="#0b4f3c" />
-            ))}
-          </svg>
-          <div className="mt-1 grid grid-cols-12 text-center text-[10px] text-cs-muted">
-            {MONTHS.map((m) => (
-              <span key={m}>{m.slice(0, 3)}</span>
-            ))}
+          <div className="relative">
+            <svg
+              viewBox={`0 0 ${chart.w} ${chart.h}`}
+              className="h-40 w-full"
+              onMouseLeave={() => setHoverIdx(null)}
+            >
+              {chart.area && <path d={chart.area} fill="#d4edd9" />}
+              {chart.d && <path d={chart.d} fill="none" stroke="#0b4f3c" strokeWidth="3" />}
+              {chart.pts.map((p, i) => (
+                <circle
+                  key={p.label}
+                  cx={p.x}
+                  cy={p.y}
+                  r={hoverIdx === i ? 5 : 3.5}
+                  fill="#0b4f3c"
+                  onMouseEnter={() => setHoverIdx(i)}
+                  className="cursor-pointer"
+                />
+              ))}
+            </svg>
+            {hoverIdx != null && chart.pts[hoverIdx] && (
+              <div
+                className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full rounded-xl bg-white px-3 py-2 text-[12px] shadow-lg ring-1 ring-black/5"
+                style={{
+                  left: `${(chart.pts[hoverIdx].x / chart.w) * 100}%`,
+                  top: `${(chart.pts[hoverIdx].y / chart.h) * 100}%`,
+                  marginTop: -8,
+                }}
+              >
+                <p className="font-semibold text-cs-ink">{chart.pts[hoverIdx].label}</p>
+                <p className="text-cs-forest">{chart.pts[hoverIdx].value}%</p>
+              </div>
+            )}
           </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-cs-muted">
+            Each month is the average of that month’s working days (present / half day / hours logged).
+            New daily updates change the current month; earlier months stay on this profile for life.
+          </p>
         </Card>
 
         <Card>
-            <div className="mb-3 flex items-center justify-between">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <div>
               <h3 className="text-[15px] font-bold text-cs-ink">Hours Logged</h3>
-              <p className="text-[12px] font-semibold text-cs-forest">
-                {weekTotal.toFixed(0)} / 30 hrs
+              <p className="text-[11px] text-cs-muted">
+                {weeks[0]?.label.split('–')[0].trim()} – {weeks[3]?.label.split('–')[1]?.trim()} · 4 weeks
               </p>
             </div>
-            <p className="mb-3 text-[11px] text-cs-muted">This Week</p>
-            <div className="flex h-36 items-end gap-2">
-              {weekHours.map((d) => (
-                <div key={d.label} className="flex flex-1 flex-col items-center gap-1">
-                  <div
-                    className="w-full rounded-t-md bg-cs-forest"
-                    style={{ height: `${Math.max(8, (d.hours / maxBar) * 100)}%` }}
-                  />
-                  <span className="text-[10px] text-cs-muted">{d.label.slice(0, 3)}</span>
-                </div>
-              ))}
+            <div className="flex items-center gap-2">
+              <p className="text-[12px] font-semibold text-cs-forest">{weeksTotal.toFixed(1)} hrs</p>
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#edf7f1] text-cs-forest disabled:opacity-40"
+                onClick={() =>
+                  setWeekMonday((d) => {
+                    const next = shiftMonday(d, -4)
+                    if (!joinMonday) return next
+                    const windowStart = shiftMonday(next, -3)
+                    if (windowStart.getTime() < joinMonday.getTime()) {
+                      const clamped = shiftMonday(joinMonday, 3)
+                      return clamped.getTime() > thisMonday.getTime() ? thisMonday : clamped
+                    }
+                    return next
+                  })
+                }
+                disabled={!canWeekBack}
+                aria-label="Previous 4 weeks"
+              >
+                <ChevronLeft size={16} />
+              </button>
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#edf7f1] text-cs-forest disabled:opacity-40"
+                onClick={() =>
+                  setWeekMonday((d) => {
+                    const next = shiftMonday(d, 4)
+                    return next.getTime() > thisMonday.getTime() ? thisMonday : next
+                  })
+                }
+                disabled={!canWeekForward}
+                aria-label="Next 4 weeks"
+              >
+                <ChevronRight size={16} />
+              </button>
             </div>
-          </Card>
+          </div>
+          <div className="space-y-3">
+            {weeks.map((week) => (
+              <div key={week.startISO}>
+                <div className="mb-1 flex items-center justify-between">
+                  <p className="text-[12px] font-semibold text-cs-ink">{week.label}</p>
+                  <p className="text-[11px] font-semibold text-cs-forest">{week.total.toFixed(1)} hrs</p>
+                </div>
+                <div className="flex h-16 items-end gap-1.5">
+                  {week.days.map((d) => (
+                    <div
+                      key={d.date}
+                      className="flex flex-1 flex-col items-center gap-0.5"
+                      title={`${d.label} ${d.date} · ${d.hours}h`}
+                    >
+                      <span className="text-[9px] font-semibold text-cs-ink">{d.hours || ''}</span>
+                      <div
+                        className={`w-full rounded-t-md ${
+                          d.mark === 'present'
+                            ? 'bg-cs-forest'
+                            : d.mark === 'half'
+                              ? 'bg-[#facc15]'
+                              : d.mark === 'leave'
+                                ? 'bg-[#86efac]'
+                                : 'bg-[#d1d5db]'
+                        }`}
+                        style={{ height: `${Math.max(d.hours ? 8 : 4, (d.hours / maxBar) * 100)}%` }}
+                      />
+                      <span className="text-[9px] text-cs-muted">{d.label.slice(0, 3)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+        </>
+        )}
       </div>
 
+      {canSeeWorkStats && (
       <div className="min-w-0 xl:col-span-3">
         <Card className="h-full">
           <div className="mb-3 flex items-center justify-between">
@@ -343,9 +491,14 @@ export default function EmployeeDetails({ person }: { person: Person }) {
           <div className="grid grid-cols-7 gap-1">
             {cells.map((day, index) => {
               if (!day) return <div key={`p-${index}`} className="h-9" />
-              const mark = dayMark(day)
+              const date = isoDate(year, month, day)
+              const rec = profileDayRecord(person, date, updates, leaveRequests, workedDayRequests)
+              const mark = rec.mark
+              const onRoll = inTenure(person, date)
               const tone =
-                mark === 'present'
+                !onRoll
+                  ? 'text-cs-muted/40'
+                  : mark === 'present'
                   ? 'bg-[#14b8a6] text-white'
                   : mark === 'half'
                     ? 'bg-[#facc15] text-[#713f12]'
@@ -353,9 +506,10 @@ export default function EmployeeDetails({ person }: { person: Person }) {
                     ? 'bg-cs-forest text-white'
                     : 'text-cs-ink'
               return (
-                <div key={isoDate(year, month, day)} className="flex h-9 items-center justify-center">
+                <div key={date} className="flex h-9 items-center justify-center">
                   <span
                     className={`flex h-8 w-8 items-center justify-center rounded-lg text-[12px] font-semibold ${tone}`}
+                    title={`${date} · ${mark}${rec.hours ? ` · ${rec.hours}h` : ''}`}
                   >
                     {day}
                   </span>
@@ -375,10 +529,12 @@ export default function EmployeeDetails({ person }: { person: Person }) {
             </span>
           </div>
           <p className="mt-6 text-[12px] leading-relaxed text-cs-muted">
-            Viewing {personLabel(person)}. Payroll is not shown on employee records.
+            Viewing {personLabel(person)}. Calendar and graphs use attendance plus daily hours for every
+            working day on this record. Payroll is not shown.
           </p>
         </Card>
       </div>
+      )}
     </div>
   )
 }

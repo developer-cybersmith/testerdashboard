@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react'
-import { AlertTriangle, Clock3, FolderOpen } from 'lucide-react'
+import { AlertTriangle, ChevronLeft, ChevronRight, Clock3, FolderOpen } from 'lucide-react'
 import { useApp } from '../../context/AppContext'
 import ProjectDetailModal from '../../components/ProjectDetailModal'
 import UpdatesCalendar, { UserAttendanceWidgets, updatePoints } from '../../components/UpdatesCalendar'
@@ -7,6 +7,7 @@ import { UserDashboardWidgets } from '../../components/dashboard/DashboardWidget
 import QueryChatSession from '../../components/QueryChatSession'
 import { LeaveRequestPanel } from '../../components/LeaveRequestPanel'
 import TesterProfile from '../../components/TesterProfile'
+import EmployeesHub from '../../components/hr/EmployeesHub'
 import { WorkedDayRequestForm, LateMorningRequestForm } from '../../components/WorkedDayRequests'
 import { isAfterEveningWindow } from '../../context/AppContext'
 import type { NavKey } from '../../components/Sidebar'
@@ -285,6 +286,25 @@ export function UserTrackerView() {
     () => updates.filter((u) => u.userId === session?.person.id),
     [updates, session],
   )
+  const updateDates = useMemo(
+    () => [...new Set(mine.map((u) => u.date))].sort((a, b) => b.localeCompare(a)),
+    [mine],
+  )
+  const [filterDate, setFilterDate] = useState(
+    () => updateDates[0] || new Date().toISOString().slice(0, 10),
+  )
+  const visible = useMemo(
+    () =>
+      mine
+        .filter((u) => u.date === filterDate)
+        .sort((a, b) => {
+          const slotRank = (slot?: string) => (slot === 'morning' ? 0 : slot === 'evening' ? 1 : 2)
+          return slotRank(a.slot) - slotRank(b.slot)
+        }),
+    [mine, filterDate],
+  )
+  const olderDate = updateDates.filter((d) => d < filterDate)[0]
+  const newerDate = [...updateDates].filter((d) => d > filterDate).at(-1)
   const slotDone =
     currentUpdateSlot === 'morning'
       ? morningUpdateToday
@@ -308,6 +328,7 @@ export function UserTrackerView() {
     }
     setError(null)
     setPoints(['', '', '', ''])
+    setFilterDate(new Date().toISOString().slice(0, 10))
   }
 
   return (
@@ -400,11 +421,46 @@ export function UserTrackerView() {
 
         <Card className="xl:col-span-3">
           <SectionTitle title="My recent updates" />
-          {mine.length === 0 ? (
-            <EmptyState text="No updates yet." />
+          <p className="mb-3 text-[12px] text-cs-muted">
+            Pick a date to see that day’s morning and evening updates.
+          </p>
+          <div className="mb-3 flex items-end gap-2">
+            <button
+              type="button"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-cs-line bg-white text-cs-forest disabled:opacity-40"
+              onClick={() => olderDate && setFilterDate(olderDate)}
+              disabled={!olderDate}
+              aria-label="Previous update date"
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <div className="min-w-0 flex-1">
+              <Field label="Update date">
+                <input
+                  className={inputClass}
+                  type="date"
+                  value={filterDate}
+                  min={updateDates[updateDates.length - 1]}
+                  max={updateDates[0] || filterDate}
+                  onChange={(e) => setFilterDate(e.target.value)}
+                />
+              </Field>
+            </div>
+            <button
+              type="button"
+              className="mb-[2px] flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-cs-line bg-white text-cs-forest disabled:opacity-40"
+              onClick={() => newerDate && setFilterDate(newerDate)}
+              disabled={!newerDate}
+              aria-label="Next update date"
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
+          {visible.length === 0 ? (
+            <EmptyState text="No update on this date. Choose another date from the filter." />
           ) : (
             <ul className="space-y-3">
-              {mine.map((u) => {
+              {visible.map((u) => {
                 const project = activeProjects.find((p) => p.id === u.projectId)
                 return (
                   <li key={u.id} className="rounded-xl border border-cs-line px-3 py-3">
@@ -578,6 +634,8 @@ export function UserDashboard({
       return <UserLeaveView />
     case 'blockers':
       return <UserBlockersView />
+    case 'people':
+      return <EmployeesHub />
     case 'profile':
       return <TesterProfile />
     default:
