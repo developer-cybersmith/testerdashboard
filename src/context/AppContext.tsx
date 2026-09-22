@@ -797,7 +797,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setSession({ person: remote.data.person, loginAt: new Date().toISOString() })
         return null
       }
-      if (remote.status === 429) {
+      if (!remote.ok && remote.status === 429) {
         return remote.message
       }
     }
