@@ -291,7 +291,12 @@ export function buildPeopleAlerts(people: Person[], today = new Date()): PeopleA
         })
       }
       const contractIn = daysUntilIso(person.contractEndDate, today)
-      if (contractIn !== null && contractIn >= 0 && contractIn <= 30) {
+      if (
+        person.role !== 'admin' &&
+        contractIn !== null &&
+        contractIn >= 0 &&
+        contractIn <= 30
+      ) {
         alerts.push({
           id: `contract-${person.id}`,
           kind: 'contract',

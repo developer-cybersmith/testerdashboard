@@ -51,6 +51,12 @@ export function TeamPerformanceCard() {
         />
       </div>
 
+      {series.length === 0 ? (
+        <p className="py-6 text-center text-[13px] text-cs-muted">
+          No team performance yet. This chart fills after testers log daily work.
+        </p>
+      ) : (
+        <>
       <div className="mb-3 flex items-end gap-2">
         <p className="text-[28px] font-bold leading-none text-cs-ink">{latest?.value ?? 0}%</p>
         {prev !== null && (
@@ -103,6 +109,8 @@ export function TeamPerformanceCard() {
           </div>
         )}
       </div>
+        </>
+      )}
     </Card>
   )
 }

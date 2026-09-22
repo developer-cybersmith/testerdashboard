@@ -3,8 +3,6 @@ import { isFirstOrThirdSaturday } from './peopleOps'
 import type { DailyUpdate, LeaveRequest, Person, WorkedDayRequest } from '../types'
 
 export const EXPECTED_DAY_HOURS = 8
-/** Live tracker records are the source of truth from this date. Earlier tenure is kept on the profile. */
-export const LIVE_TRACKER_FROM = '2026-07-01'
 
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
@@ -45,15 +43,6 @@ export function isExpectedWorkDate(iso: string) {
   return true
 }
 
-function stableUnit(seed: string) {
-  let h = 2166136261
-  for (let i = 0; i < seed.length; i += 1) {
-    h ^= seed.charCodeAt(i)
-    h = Math.imul(h, 16777619)
-  }
-  return (h >>> 0) / 4294967296
-}
-
 function leaveCoversDate(leaves: LeaveRequest[], userId: string, date: string) {
   return leaves.some(
     (lv) =>
@@ -79,22 +68,6 @@ export function hoursOnDate(
   return logged + extra
 }
 
-type TenureDay = {
-  mark: DayAttendance
-  hours: number
-  slots: 0 | 1 | 2
-}
-
-function tenureHistoryDay(personId: string, date: string): TenureDay | null {
-  if (!isExpectedWorkDate(date)) return null
-  const unit = stableUnit(`${personId}:${date}`)
-  const saturday = weekdayIndex(date) === 6
-  if (saturday && unit < 0.42) return null
-  if (unit < 0.07) return { mark: 'absent', hours: 0, slots: 0 }
-  if (unit < 0.17) return { mark: 'half', hours: 3.2 + unit * 2, slots: 1 }
-  return { mark: 'present', hours: 6.4 + unit * 2.2, slots: 2 }
-}
-
 export function profileDayRecord(
   person: Person,
   date: string,
@@ -102,7 +75,7 @@ export function profileDayRecord(
   leaves: LeaveRequest[],
   workedDays: WorkedDayRequest[] = [],
   today = todayISO(),
-): { mark: DayAttendance; hours: number; slots: number; source: 'live' | 'tenure' | 'none' } {
+): { mark: DayAttendance; hours: number; slots: number; source: 'live' | 'none' } {
   if (!inTenure(person, date, today)) {
     return { mark: 'absent', hours: 0, slots: 0, source: 'none' }
   }
@@ -115,16 +88,14 @@ export function profileDayRecord(
     liveHours > 0 ||
     liveMark !== 'absent' ||
     updates.some((u) => u.userId === person.id && u.date === date)
-  if (hasLive || date >= LIVE_TRACKER_FROM) {
+  if (hasLive) {
     const slots = updates.filter((u) => u.userId === person.id && u.date === date)
     const morning = slots.some((u) => slotFromUpdate(u) === 'morning')
     const evening = slots.some((u) => slotFromUpdate(u) === 'evening')
     const slotCount = (morning ? 1 : 0) + (evening ? 1 : 0)
     return { mark: liveMark, hours: liveHours, slots: slotCount, source: 'live' }
   }
-  const tenure = tenureHistoryDay(person.id, date)
-  if (!tenure) return { mark: 'absent', hours: 0, slots: 0, source: 'none' }
-  return { ...tenure, source: 'tenure' }
+  return { mark: 'absent', hours: 0, slots: 0, source: 'none' }
 }
 
 /** 0–100 for a working day. Leave days return null (not scored). Non-work days return null unless they actually worked. */
@@ -137,12 +108,12 @@ export function dayPerformanceScore(
   today = todayISO(),
 ) {
   const rec = profileDayRecord(person, date, updates, leaves, workedDays, today)
+  if (rec.source === 'none') return null
   if (rec.mark === 'leave') return null
   if (date === today && rec.mark === 'absent' && rec.hours <= 0) return null
   if (date > today) return null
   const expected = isExpectedWorkDate(date)
   if (!expected && rec.hours <= 0 && rec.mark === 'absent') return null
-  if (rec.source === 'none' && rec.mark === 'absent' && !expected) return null
 
   const attendance =
     rec.mark === 'present' ? 100 : rec.mark === 'half' ? 50 : 0

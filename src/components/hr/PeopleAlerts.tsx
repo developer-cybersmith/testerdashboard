@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Cake, CalendarHeart, ScrollText, Sparkles } from 'lucide-react'
-import { isOrgAdmin, useApp } from '../../context/AppContext'
+import { canViewDirectoryPerson, isOrgAdmin, useApp } from '../../context/AppContext'
 import { buildPeopleAlerts } from '../../hr/peopleOps'
 import type { PeopleAlert } from '../../types'
 
@@ -29,6 +29,9 @@ export default function PeopleAlerts() {
 
   const orgView = isOrgAdmin(session.person.role)
   const alerts = buildPeopleAlerts(people).filter((alert) => {
+    const target = people.find((p) => p.id === alert.personId)
+    if (!target) return false
+    if (!canViewDirectoryPerson(session.person, target) && target.id !== session.person.id) return false
     if (orgView) return true
     if (alert.kind === 'birthday' || alert.kind === 'anniversary') return true
     return alert.personId === session.person.id

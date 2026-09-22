@@ -25,7 +25,12 @@ function AdminOverview() {
       <Card>
         <SectionTitle title="All project progress" />
         <div className="space-y-3">
-          {projects.map((p) => (
+          {projects.length === 0 ? (
+            <p className="py-6 text-center text-[13px] text-cs-muted">
+              No projects yet. Progress appears after a project is created and testers are allocated.
+            </p>
+          ) : (
+            projects.map((p) => (
             <div key={p.id} className="rounded-xl border border-cs-line px-3 py-3">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <div>
@@ -55,7 +60,8 @@ function AdminOverview() {
                 />
               </div>
             </div>
-          ))}
+          ))
+          )}
         </div>
         <p className="mt-3 text-[12px] text-cs-muted">
           Closed projects: {closed.length} · Open blockers: {openBlockers.length} · Open queries:{' '}

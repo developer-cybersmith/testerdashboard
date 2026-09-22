@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { Download, Paperclip, Search, Send, X } from 'lucide-react'
-import { isOrgAdmin, personLabel, publicRoleLabel, useApp } from '../context/AppContext'
+import { canViewDirectoryPerson, isOrgAdmin, personLabel, publicRoleLabel, useApp } from '../context/AppContext'
 import type { QueryAttachment, QueryItem } from '../types'
 import { PrimaryButton, inputClass } from './ui'
 
@@ -154,6 +154,7 @@ export default function QueryChatSession() {
     if (!q) return []
     return people.filter((p) => {
       if (p.id === session.person.id) return false
+      if (!canViewDirectoryPerson(session.person, p)) return false
       return (
         p.name.toLowerCase().includes(q) ||
         (p.email || '').toLowerCase().includes(q) ||

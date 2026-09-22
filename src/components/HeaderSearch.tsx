@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search } from 'lucide-react'
-import { personLabel, roleLabel, useApp } from '../context/AppContext'
+import { canViewDirectoryPerson, personLabel, roleLabel, useApp } from '../context/AppContext'
 import { lifecycleLabel, matchesEmployeeSearch } from '../hr/peopleOps'
 import type { NavKey } from './Sidebar'
 import { Badge } from './ui'
@@ -26,9 +26,11 @@ export default function HeaderSearch({ onNavigate }: { onNavigate: (key: NavKey)
 
   const results = useMemo(() => {
     const term = q.trim()
-    const list = term ? people.filter((p) => matchesEmployeeSearch(p, term)) : people
+    const list = (term ? people.filter((p) => matchesEmployeeSearch(p, term)) : people).filter((p) =>
+      canViewDirectoryPerson(session?.person, p),
+    )
     return [...list].sort((a, b) => a.name.localeCompare(b.name)).slice(0, 8)
-  }, [people, q])
+  }, [people, q, session])
 
   if (!session) return null
 
