@@ -98,7 +98,7 @@ import {
   quotaBucket,
   remainingLeave,
 } from '../hr/peopleOps'
-import type { AppSnapshot } from '../lib/appSnapshot'
+import { publicPeople, type AppSnapshot } from '../lib/appSnapshot'
 import {
   clearStoredSession,
   isRemoteConfigured,
@@ -282,7 +282,7 @@ interface AppContextValue {
     location?: string
     managerId?: string
     skills?: string
-  }) => string | null
+  }) => Promise<string | null>
   people: Person[]
   projects: Project[]
   updates: DailyUpdate[]
@@ -440,6 +440,7 @@ interface AppContextValue {
   channelPosts: ChannelPost[]
   historicalExits: typeof historicalExits
   remoteReady: boolean
+  syncError: string | null
   toggleChecklistItem: (
     personId: string,
     kind: 'onboarding' | 'offboarding',
@@ -623,7 +624,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const lastActiveRef = useRef(Date.now())
   const accessTokenRef = useRef<string | null>(null)
   const skipPersistRef = useRef(true)
+  const dirtyRef = useRef(false)
+  const snapshotRef = useRef<AppSnapshot | null>(null)
   const [remoteReady, setRemoteReady] = useState(false)
+  const [syncError, setSyncError] = useState<string | null>(null)
   const [exitHistory, setExitHistory] = useState(historicalExits)
 
   useEffect(() => {
@@ -707,41 +711,65 @@ export function AppProvider({ children }: { children: ReactNode }) {
         lastActiveRef.current = Date.now()
         setSession({ person: res.data.person, loginAt: new Date().toISOString() })
       }
+      setSyncError(null)
       setRemoteReady(true)
     })
   }, [applySnapshot])
 
+  const liveSnapshot: AppSnapshot = {
+    people,
+    projects,
+    updates,
+    queries,
+    blockers,
+    discussions,
+    notifications,
+    leaveRequests,
+    requirementRequests,
+    projectStatusRequests,
+    workedDayRequests,
+    checklists,
+    reviews,
+    assets,
+    accessGrants,
+    payslips,
+    hrTickets,
+    regularizations,
+    roster,
+    integrations,
+    channelPosts,
+    historicalExits: exitHistory,
+  }
+  snapshotRef.current = liveSnapshot
+
+  const pushSnapshot = useCallback(async (snapshot: AppSnapshot) => {
+    const token = accessTokenRef.current
+    if (!token) return false
+    const res = await remoteSaveSnapshot(token, { ...snapshot, people: publicPeople(snapshot.people) })
+    if (!res.ok) {
+      dirtyRef.current = true
+      setSyncError(res.message)
+      return false
+    }
+    dirtyRef.current = false
+    setSyncError(null)
+    return true
+  }, [])
+
   useEffect(() => {
     if (skipPersistRef.current || !remoteReady || !accessTokenRef.current) return
-    const snapshot: AppSnapshot = {
-      people,
-      projects,
-      updates,
-      queries,
-      blockers,
-      discussions,
-      notifications,
-      leaveRequests,
-      requirementRequests,
-      projectStatusRequests,
-      workedDayRequests,
-      checklists,
-      reviews,
-      assets,
-      accessGrants,
-      payslips,
-      hrTickets,
-      regularizations,
-      roster,
-      integrations,
-      channelPosts,
-      historicalExits: exitHistory,
-    }
+    dirtyRef.current = true
+    const snapshot = snapshotRef.current
+    if (!snapshot) return
     const t = window.setTimeout(() => {
-      const token = accessTokenRef.current
-      if (!token) return
-      void remoteSaveSnapshot(token, snapshot)
-    }, 1200)
+      void pushSnapshot(snapshot).then((ok) => {
+        if (ok) return
+        window.setTimeout(() => {
+          const latest = snapshotRef.current
+          if (latest && dirtyRef.current) void pushSnapshot(latest)
+        }, 2000)
+      })
+    }, 250)
     return () => window.clearTimeout(t)
   }, [
     remoteReady,
@@ -767,7 +795,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
     integrations,
     channelPosts,
     exitHistory,
+    pushSnapshot,
   ])
+
+  useEffect(() => {
+    if (!remoteReady) return
+    const pull = async () => {
+      if (dirtyRef.current || skipPersistRef.current) return
+      const token = accessTokenRef.current
+      if (!token) return
+      const res = await remoteBootstrap(token)
+      if (!res.ok || dirtyRef.current) return
+      applySnapshot(res.data.snapshot)
+      if (res.data.person) {
+        setSession((current) =>
+          current && current.person.id === res.data.person?.id
+            ? { ...current, person: res.data.person as NonNullable<typeof res.data.person> }
+            : current,
+        )
+      }
+    }
+    const timer = window.setInterval(() => void pull(), 4000)
+    const onHide = () => {
+      if (document.visibilityState !== 'hidden') return
+      const snapshot = snapshotRef.current
+      if (snapshot && dirtyRef.current) void pushSnapshot(snapshot)
+    }
+    document.addEventListener('visibilitychange', onHide)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onHide)
+    }
+  }, [remoteReady, applySnapshot, pushSnapshot])
 
   const login = useCallback((personId: string) => {
     const person = people.find((p) => p.id === personId)
@@ -799,7 +858,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           refreshToken: remote.data.refreshToken,
         })
         if (remote.data.snapshot) applySnapshot(remote.data.snapshot)
+        else skipPersistRef.current = false
         setRemoteReady(true)
+        setSyncError(null)
         setLoginFails(0)
         setLoginLockedUntil(0)
         lastActiveRef.current = Date.now()
@@ -828,12 +889,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLoginFails(0)
     setLoginLockedUntil(0)
     lastActiveRef.current = Date.now()
+    if (isRemoteConfigured()) {
+      setSyncError(
+        'This session is on this browser only. Supabase sign-in did not start, so testers, team leaders, and updates are not being stored.',
+      )
+    }
     setSession({ person, loginAt: new Date().toISOString() })
     return null
   }, [people, loginFails, loginLockedUntil, applySnapshot])
 
   const registerEmployee: AppContextValue['registerEmployee'] = useCallback(
-    (input) => {
+    async (input) => {
       if (!session || !canAct(session.person.role, ['hr'])) {
         return 'Only HR can register employees'
       }
@@ -894,12 +960,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ],
         notes: [],
       }
+      const token = accessTokenRef.current
+      if (isRemoteConfigured() && !token) {
+        return 'Database sign-in is not active, so this tester or team leader cannot be stored yet.'
+      }
+      if (token) {
+        const saved = await remoteProvisionEmployee(token, person, password)
+        if (!saved.ok) return saved.message
+      }
       setPeople((prev) => [...prev, person])
       setChecklists((prev) => [...prev, makeChecklist(person.id, 'onboarding')])
-      const token = accessTokenRef.current
-      if (token) {
-        void remoteProvisionEmployee(token, person, password)
-      }
       return null
     },
     [session, people],
@@ -932,8 +1002,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [people, session])
 
   const logout = useCallback(() => {
+    const snapshot = snapshotRef.current
+    const token = accessTokenRef.current
+    if (token && snapshot && dirtyRef.current) void remoteSaveSnapshot(token, { ...snapshot, people: publicPeople(snapshot.people) })
     accessTokenRef.current = null
+    dirtyRef.current = false
     setRemoteReady(false)
+    setSyncError(null)
     clearStoredSession()
     setSession(null)
   }, [])
@@ -943,8 +1018,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const idle = Date.now() - lastActiveRef.current
     const age = Date.now() - new Date(session.loginAt).getTime()
     if (idle > 30 * 60 * 1000 || age > 8 * 60 * 60 * 1000) {
+      const snapshot = snapshotRef.current
+      const token = accessTokenRef.current
+      if (token && snapshot && dirtyRef.current) {
+        void remoteSaveSnapshot(token, { ...snapshot, people: publicPeople(snapshot.people) })
+      }
       accessTokenRef.current = null
+      dirtyRef.current = false
       setRemoteReady(false)
+      setSyncError(null)
       clearStoredSession()
       setSession(null)
     }
@@ -3018,6 +3100,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     logout,
     companyDomain: COMPANY_DOMAIN,
     registerEmployee,
+    syncError,
     people,
     projects,
     updates,

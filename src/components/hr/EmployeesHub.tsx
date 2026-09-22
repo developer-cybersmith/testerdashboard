@@ -77,11 +77,14 @@ function AddEmployeeForm() {
   const [skills, setSkills] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
   const [ok, setOk] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
 
-  const submit = (e: FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault()
+    if (saving) return
     setOk(null)
-    const error = registerEmployee({
+    setSaving(true)
+    const error = await registerEmployee({
       name,
       email,
       password,
@@ -98,6 +101,7 @@ function AddEmployeeForm() {
       managerId,
       skills,
     })
+    setSaving(false)
     if (error) {
       setFormError(error)
       return
@@ -118,7 +122,7 @@ function AddEmployeeForm() {
     <Card>
       <SectionTitle title="Add employee" />
       <p className="mb-3 text-[12px] text-cs-muted">
-        HR-only. Company email (@{COMPANY_DOMAIN}). Opens an onboarding checklist automatically.
+        HR-only. Company email (@{COMPANY_DOMAIN}). The tester or team leader is saved in the database and can sign in with the temporary password.
       </p>
       <form className="grid gap-3 md:grid-cols-2" onSubmit={submit}>
         <Field label="Full name">
@@ -193,7 +197,9 @@ function AddEmployeeForm() {
         </div>
         {formError && <p className="md:col-span-2 text-[12px] font-semibold text-red-600">{formError}</p>}
         {ok && <p className="md:col-span-2 text-[12px] font-semibold text-cs-forest">{ok}</p>}
-        <PrimaryButton type="submit">Add employee</PrimaryButton>
+        <PrimaryButton type="submit" disabled={saving}>
+          {saving ? 'Saving…' : 'Add employee'}
+        </PrimaryButton>
       </form>
     </Card>
   )
