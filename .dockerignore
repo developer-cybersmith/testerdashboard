@@ -1,0 +1,10 @@
+node_modules
+dist
+dist-ssr
+.git
+.agents
+.env
+.env.*
+!.env.example
+*.log
+*.md
