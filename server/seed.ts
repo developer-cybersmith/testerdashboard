@@ -1,5 +1,5 @@
 import './env.ts'
-import { createAdminClient } from '@supabase/server/core'
+import { createAdminClient, resolveEnv } from '@supabase/server/core'
 import {
   initialBlockers,
   initialDiscussions,
@@ -68,6 +68,12 @@ async function provisionAuthUser(
 }
 
 async function main() {
+  const env = resolveEnv()
+  if (env.error || !env.data || !Object.keys(env.data.secretKeys || {}).length) {
+    throw new Error(
+      'SUPABASE_SECRET_KEY is empty in .env. Paste the full secret key from Supabase API Keys, restart the API, then run npm run seed.',
+    )
+  }
   const admin = createAdminClient()
   const snapshot: AppSnapshot = {
     people: publicPeople(initialPeople),

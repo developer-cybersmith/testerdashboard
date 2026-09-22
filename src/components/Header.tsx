@@ -5,11 +5,15 @@ import NotificationBell from './NotificationBell'
 import type { NavKey } from './Sidebar'
 
 export default function Header({ onNavigate }: { onNavigate: (key: NavKey) => void }) {
-  const { session } = useApp()
+  const { session, syncError } = useApp()
   if (!session) return null
 
   return (
-    <header className="mb-3 flex items-center gap-3">
+    <header className="mb-3">
+      {syncError ? (
+        <p className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-[12px] text-amber-950">{syncError}</p>
+      ) : null}
+      <div className="flex items-center gap-3">
       <HeaderSearch onNavigate={onNavigate} />
 
       <div className="ml-auto flex shrink-0 items-center gap-3">
@@ -31,6 +35,7 @@ export default function Header({ onNavigate }: { onNavigate: (key: NavKey) => vo
             </p>
           </div>
         </div>
+      </div>
       </div>
     </header>
   )

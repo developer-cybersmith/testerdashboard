@@ -9,6 +9,7 @@
     "dev:api": "tsx watch --env-file=.env server/index.ts",
     "seed": "tsx --env-file=.env server/seed.ts",
     "build": "tsc -b && vite build",
+    "start": "tsx server/index.ts",
     "lint": "oxlint",
     "preview": "vite preview"
   },
@@ -20,7 +21,8 @@
     "lucide-react": "^1.30.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "redis": "^6.2.1"
+    "redis": "^6.2.1",
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
@@ -31,7 +33,6 @@
     "concurrently": "^10.0.5",
     "oxlint": "^1.75.0",
     "tailwindcss": "^4.3.3",
-    "tsx": "^4.23.15",
     "typescript": "~6.0.2",
     "vite": "^8.2.0"
   }

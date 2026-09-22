@@ -1,4 +1,4 @@
-import { resolveEnv } from '@supabase/server/core'
+import { createAdminClient, resolveEnv } from '@supabase/server/core'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { HTTPException } from 'hono/http-exception'
@@ -27,6 +27,11 @@ type Env = {
 }
 
 const COMPANY_DOMAIN = 'cybersmithsecure.com'
+
+function secretConfigured() {
+  const env = resolveEnv()
+  return Boolean(env.data && Object.keys(env.data.secretKeys || {}).length)
+}
 
 function normalizeCompanyEmail(raw: string) {
   const value = raw.trim().toLowerCase()
@@ -184,23 +189,56 @@ app.get('/api/bootstrap', withSupabase({ auth: 'user' }), async (c) => {
 })
 
 app.put('/api/snapshot', withSupabase({ auth: 'user' }), async (c) => {
-  const { supabaseAdmin } = c.var.supabaseContext
+  const ctx = c.var.supabaseContext
   const snapshot = (await c.req.json()) as AppSnapshot
   if (!snapshot?.people?.length) {
     return c.json({ message: 'Snapshot is missing people' }, 400)
   }
   snapshot.people = publicPeople(snapshot.people)
-  await saveSnapshot(supabaseAdmin, snapshot)
+  if (!secretConfigured()) {
+    return c.json(
+      {
+        message:
+          'Add SUPABASE_SECRET_KEY to .env and restart the API. Testers, team leaders, and dashboard data cannot be stored until that key is set.',
+      },
+      503,
+    )
+  }
+  try {
+    await saveSnapshot(ctx.supabaseAdmin, snapshot)
+  } catch (err) {
+    try {
+      await saveSnapshot(ctx.supabase, snapshot)
+    } catch {
+      const message = err instanceof Error ? err.message : 'Could not save to the database'
+      return c.json({ message }, 500)
+    }
+  }
   await redisDel(BOOTSTRAP_CACHE_KEY)
   await redisSet(BOOTSTRAP_CACHE_KEY, JSON.stringify(snapshot), 30)
   return c.json({ ok: true })
 })
 
 app.post('/api/employees/provision', withSupabase({ auth: 'user' }), async (c) => {
-  const { supabaseAdmin, userClaims } = c.var.supabaseContext
-  const callerEmail = userClaims?.email?.toLowerCase()
+  const ctx = c.var.supabaseContext
+  const callerEmail = ctx.userClaims?.email?.toLowerCase()
   if (!callerEmail) return c.json({ message: 'Unauthorized' }, 401)
-  const caller = await findPersonByEmail(supabaseAdmin, callerEmail)
+  if (!secretConfigured()) {
+    return c.json(
+      {
+        message:
+          'Add SUPABASE_SECRET_KEY to .env and restart the API before adding testers or team leaders.',
+      },
+      503,
+    )
+  }
+  let caller = null as Awaited<ReturnType<typeof findPersonByEmail>>
+  try {
+    caller = await findPersonByEmail(ctx.supabase, callerEmail)
+  } catch {
+    caller = null
+  }
+  if (!caller) caller = await findPersonByEmail(ctx.supabaseAdmin, callerEmail)
   if (!caller || caller.person.role !== 'hr') {
     return c.json({ message: 'Only HR can register employees' }, 403)
   }
@@ -208,16 +246,32 @@ app.post('/api/employees/provision', withSupabase({ auth: 'user' }), async (c) =
   if (!body.person?.email || !body.password) {
     return c.json({ message: 'Person and password are required' }, 400)
   }
-  const { data, error } = await supabaseAdmin.auth.admin.createUser({
-    email: body.person.email.toLowerCase(),
-    password: body.password,
-    email_confirm: true,
-    user_metadata: { person_id: body.person.id, role: body.person.role },
-  })
-  if (error) return c.json({ message: error.message }, 400)
-  await upsertPerson(supabaseAdmin, body.person, data.user?.id)
+  const admin = createAdminClient()
+  const email = body.person.email.toLowerCase()
+  const { data: listed, error: listError } = await admin.auth.admin.listUsers({ page: 1, perPage: 200 })
+  if (listError) return c.json({ message: listError.message }, 400)
+  const existing = listed.users.find((user) => user.email?.toLowerCase() === email)
+  let authUserId = existing?.id
+  if (existing) {
+    const { error } = await admin.auth.admin.updateUserById(existing.id, {
+      password: body.password,
+      email_confirm: true,
+      user_metadata: { person_id: body.person.id, role: body.person.role },
+    })
+    if (error) return c.json({ message: error.message }, 400)
+  } else {
+    const { data, error } = await admin.auth.admin.createUser({
+      email,
+      password: body.password,
+      email_confirm: true,
+      user_metadata: { person_id: body.person.id, role: body.person.role },
+    })
+    if (error) return c.json({ message: error.message }, 400)
+    authUserId = data.user?.id
+  }
+  await upsertPerson(admin, body.person, authUserId)
   await redisDel(BOOTSTRAP_CACHE_KEY)
-  return c.json({ ok: true, authUserId: data.user?.id })
+  return c.json({ ok: true, authUserId })
 })
 
 app.post('/api/auth/password', withSupabase({ auth: 'user' }), async (c) => {
