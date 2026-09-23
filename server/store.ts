@@ -69,6 +69,44 @@ export async function loadSnapshot(admin: SupabaseClient): Promise<AppSnapshot |
   }
 }
 
+function phoneDigits(value: string) {
+  return value.replace(/\D/g, '')
+}
+
+export function toE164Phone(value: string) {
+  const digits = phoneDigits(value)
+  if (digits.length === 10) return `+91${digits}`
+  if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`
+  if (digits.length >= 11 && digits.length <= 15) return `+${digits}`
+  return ''
+}
+
+export function samePhone(left: string, right: string) {
+  const a = phoneDigits(left)
+  const b = phoneDigits(right)
+  if (a.length < 10 || b.length < 10) return false
+  return a === b || a.endsWith(b) || b.endsWith(a)
+}
+
+export async function findPersonByPhone(admin: SupabaseClient, phone: string) {
+  const { data, error } = await admin.from('people').select('id, email, role, payload, auth_user_id')
+  if (error) throw error
+  const row = (data || []).find((item) => samePhone(String((item.payload as Person | null)?.phone || ''), phone))
+  if (!row) return null
+  const payload = (row.payload || {}) as Person
+  return {
+    person: publicPeople([
+      {
+        ...payload,
+        id: row.id as string,
+        email: row.email as string,
+        role: row.role as Person['role'],
+      },
+    ])[0],
+    authUserId: row.auth_user_id as string | null,
+  }
+}
+
 export async function findPersonByEmail(admin: SupabaseClient, email: string) {
   const { data, error } = await admin
     .from('people')

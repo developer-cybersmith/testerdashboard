@@ -106,6 +106,8 @@ import {
   readStoredSession,
   remoteBootstrap,
   remoteLogin,
+  remoteSendPhoneOtp,
+  remoteVerifyPhoneOtp,
   remoteProvisionEmployee,
   remoteSaveSnapshot,
   remoteUpdatePassword,
@@ -265,6 +267,9 @@ interface AppContextValue {
   session: AppUserSession | null
   login: (personId: string) => void
   loginWithEmail: (email: string, password: string) => Promise<string | null>
+  sendPhoneOtp: (phone: string) => Promise<string | null>
+  loginWithPhoneOtp: (phone: string, otp: string) => Promise<string | null>
+  resetPasswordWithPhoneOtp: (phone: string, otp: string, nextPassword: string) => Promise<string | null>
   logout: () => void
   companyDomain: string
   registerEmployee: (input: {
@@ -917,6 +922,79 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSession({ person, loginAt: new Date().toISOString() })
     return null
   }, [people, loginFails, loginLockedUntil, applySnapshot])
+
+  const adoptRemoteSession = useCallback(
+    (remote: { accessToken: string; refreshToken: string; person: Person; snapshot: AppSnapshot | null }) => {
+      accessTokenRef.current = remote.accessToken
+      storeSession({
+        accessToken: remote.accessToken,
+        refreshToken: remote.refreshToken,
+      })
+      if (remote.snapshot) applySnapshot(remote.snapshot)
+      else skipPersistRef.current = false
+      setRemoteReady(true)
+      setSyncError(null)
+      setLoginFails(0)
+      setLoginLockedUntil(0)
+      lastActiveRef.current = Date.now()
+      setSession({ person: remote.person, loginAt: new Date().toISOString() })
+    },
+    [applySnapshot],
+  )
+
+  const sendPhoneOtp = useCallback(async (phone: string) => {
+    await ensureRemoteConfig()
+    if (!isRemoteConfigured()) return 'Database sign-in is not active, so a mobile OTP cannot be sent.'
+    const result = await remoteSendPhoneOtp(phone)
+    return result.ok ? null : result.message
+  }, [])
+
+  const loginWithPhoneOtp = useCallback(
+    async (phone: string, otp: string) => {
+      await ensureRemoteConfig()
+      const result = await remoteVerifyPhoneOtp(phone, otp)
+      if (!result.ok || !result.data.person || !result.data.accessToken) {
+        return result.ok ? 'That OTP is not valid' : result.message
+      }
+      adoptRemoteSession(result.data)
+      return null
+    },
+    [adoptRemoteSession],
+  )
+
+  const resetPasswordWithPhoneOtp = useCallback(
+    async (phone: string, otp: string, nextPassword: string) => {
+      if (!isStrongPassword(nextPassword)) return PASSWORD_POLICY
+      await ensureRemoteConfig()
+      const result = await remoteVerifyPhoneOtp(phone, otp)
+      if (!result.ok || !result.data.person || !result.data.accessToken) {
+        return result.ok ? 'That OTP is not valid' : result.message
+      }
+      const updated = await remoteUpdatePassword(result.data.accessToken, nextPassword)
+      if (!updated.ok) return updated.message
+      const person = { ...result.data.person, mustChangePassword: false }
+      const snapshot = result.data.snapshot
+        ? {
+            ...result.data.snapshot,
+            people: result.data.snapshot.people.map((p) =>
+              p.id === person.id ? { ...p, mustChangePassword: false } : p,
+            ),
+          }
+        : null
+      if (snapshot) {
+        await remoteSaveSnapshot(result.data.accessToken, {
+          ...snapshot,
+          people: publicPeople(snapshot.people),
+        })
+      }
+      adoptRemoteSession({ ...result.data, person, snapshot })
+      if (!snapshot) {
+        setPeople((prev) => prev.map((p) => (p.id === person.id ? { ...p, mustChangePassword: false } : p)))
+      }
+      return null
+    },
+    [adoptRemoteSession],
+  )
 
   const registerEmployee: AppContextValue['registerEmployee'] = useCallback(
     async (input) => {
@@ -3122,6 +3200,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     session,
     login,
     loginWithEmail,
+    sendPhoneOtp,
+    loginWithPhoneOtp,
+    resetPasswordWithPhoneOtp,
     logout,
     companyDomain: COMPANY_DOMAIN,
     registerEmployee,
