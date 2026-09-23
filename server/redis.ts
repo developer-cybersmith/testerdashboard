@@ -6,22 +6,53 @@ let client: RedisClient | null = null
 let connecting: Promise<RedisClient | null> | null = null
 let unavailableUntil = 0
 
+function isLocalHost(url: string) {
+  try {
+    const host = new URL(url).hostname
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1'
+  } catch {
+    return false
+  }
+}
+
+/** Production uses Railway Redis. A localhost URL is only for a developer machine. */
+function resolveRedisUrl() {
+  const fromParts = (() => {
+    const host = (process.env.REDISHOST || process.env.REDIS_HOST || '').trim()
+    if (!host) return ''
+    const port = (process.env.REDISPORT || process.env.REDIS_PORT || '6379').trim()
+    const user = (process.env.REDISUSER || process.env.REDIS_USER || 'default').trim()
+    const password = process.env.REDISPASSWORD || process.env.REDIS_PASSWORD || ''
+    if (!password) return `redis://${host}:${port}`
+    return `redis://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}`
+  })()
+  const explicit = (process.env.REDIS_URL || process.env.REDIS_PRIVATE_URL || '').trim()
+  const production = process.env.NODE_ENV === 'production'
+  const candidates = [explicit, fromParts].filter(Boolean)
+  const remote = candidates.find((url) => !isLocalHost(url))
+  if (production) return remote || ''
+  return explicit || fromParts
+}
+
 async function connect(): Promise<RedisClient | null> {
   if (client?.isOpen) return client
   if (Date.now() < unavailableUntil) return null
   if (connecting) return connecting
-  const url = process.env.REDIS_URL
+  const url = resolveRedisUrl()
   if (!url) return null
   connecting = (async () => {
     const next = createClient({
       url,
       socket: {
-        connectTimeout: 1200,
-        reconnectStrategy: false,
+        connectTimeout: 5000,
+        reconnectStrategy(retries) {
+          if (retries > 10) return new Error('redis unavailable')
+          return Math.min(retries * 200, 2000)
+        },
       },
     })
     next.on('error', () => {
-      /* handled below */
+      if (client === next) client = null
     })
     try {
       await next.connect()
@@ -87,7 +118,7 @@ export async function redisIncr(key: string, ttlSeconds: number) {
 }
 
 export async function redisPing() {
-  if (!process.env.REDIS_URL) return 'disabled'
+  if (!resolveRedisUrl()) return 'disabled'
   const redis = await connect()
   if (!redis) return 'down'
   try {
