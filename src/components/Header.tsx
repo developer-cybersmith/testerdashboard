@@ -20,10 +20,15 @@ export default function Header({ onNavigate }: { onNavigate: (key: NavKey) => vo
         <PeopleAlerts />
         <NotificationBell onNavigate={onNavigate} />
 
-        <div className="ml-1 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => onNavigate('profile')}
+          className="ml-1 flex items-center gap-3 rounded-full py-1 pl-1 pr-2 text-left hover:bg-white"
+          aria-label="Open my profile"
+        >
           <img
             src={session.person.avatar}
-            alt={session.person.name}
+            alt=""
             className="h-10 w-10 rounded-full object-cover"
           />
           <div className="hidden leading-tight sm:block">
@@ -34,7 +39,7 @@ export default function Header({ onNavigate }: { onNavigate: (key: NavKey) => vo
                 : `${session.person.jobTitle ? `${session.person.jobTitle} · ` : ''}${roleLabel(session.person.role)}`}
             </p>
           </div>
-        </div>
+        </button>
       </div>
       </div>
     </header>

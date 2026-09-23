@@ -13,10 +13,10 @@ import {
   loginLocked,
   recordLoginFailure,
   redisDel,
-  redisGet,
   redisPing,
   redisSet,
 } from './redis.ts'
+import { syncAuthUsersIntoPeople } from './ensureStaff.ts'
 import { findPersonByEmail, loadSnapshot, saveSnapshot, upsertPerson } from './store.ts'
 import { publicPeople, type AppSnapshot } from '../src/lib/appSnapshot.ts'
 
@@ -46,20 +46,13 @@ function closedAccount(person: Person) {
   return person.status === 'inactive' || person.lifecycleStatus === 'exited'
 }
 
-async function cachedBootstrap(admin: SupabaseContext['supabaseAdmin']) {
-  const cached = await redisGet(BOOTSTRAP_CACHE_KEY)
-  if (cached) {
-    try {
-      return JSON.parse(cached) as AppSnapshot
-    } catch {
-      /* rebuild */
-    }
+async function cachedBootstrap(userClient: SupabaseContext['supabase']) {
+  const reader = secretConfigured() ? createAdminClient() : userClient
+  if (secretConfigured()) {
+    const added = await syncAuthUsersIntoPeople()
+    if (added > 0) await redisDel(BOOTSTRAP_CACHE_KEY)
   }
-  const snapshot = await loadSnapshot(admin)
-  if (snapshot) {
-    await redisSet(BOOTSTRAP_CACHE_KEY, JSON.stringify(snapshot), 30)
-  }
-  return snapshot
+  return loadSnapshot(reader)
 }
 
 async function cachePerson(person: Person) {
@@ -228,7 +221,6 @@ app.put('/api/snapshot', withSupabase({ auth: 'user' }), async (c) => {
     }
   }
   await redisDel(BOOTSTRAP_CACHE_KEY)
-  await redisSet(BOOTSTRAP_CACHE_KEY, JSON.stringify(snapshot), 30)
   return c.json({ ok: true })
 })
 
