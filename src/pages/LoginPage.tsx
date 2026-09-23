@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { ShieldCheck } from 'lucide-react'
 import { COMPANY_DOMAIN, useApp } from '../context/AppContext'
-import { isRemoteConfigured, remoteForgotPassword } from '../lib/api'
+import { ensureRemoteConfig, isRemoteConfigured, remoteForgotPassword } from '../lib/api'
 import { Field, PrimaryButton, inputClass } from '../components/ui'
 
 export default function LoginPage() {
@@ -27,6 +27,7 @@ export default function LoginPage() {
       setError(`Enter your company email (@${COMPANY_DOMAIN}) first`)
       return
     }
+    await ensureRemoteConfig()
     if (!isRemoteConfigured()) {
       setError('Password reset is available after database sign-in is active')
       return

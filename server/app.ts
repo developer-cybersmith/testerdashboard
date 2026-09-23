@@ -28,9 +28,29 @@ type Env = {
 
 const COMPANY_DOMAIN = 'cybersmithsecure.com'
 
+function firstConfigured(record?: Record<string, string>) {
+  if (!record) return ''
+  return Object.values(record).find((value) => value.trim()) || ''
+}
+
+/** Live process env. The values in .env.example are placeholders and are not used. */
+export function supabaseProcessEnv() {
+  const resolved = resolveEnv()
+  const supabaseUrl = (process.env.SUPABASE_URL || resolved.data?.url || '').trim()
+  const publishableKey = (
+    process.env.SUPABASE_PUBLISHABLE_KEY ||
+    firstConfigured(resolved.data?.publishableKeys as Record<string, string> | undefined) ||
+    ''
+  ).trim()
+  const hasSecret = Boolean(
+    (process.env.SUPABASE_SECRET_KEY || '').trim() ||
+      (resolved.data && Object.keys(resolved.data.secretKeys || {}).length),
+  )
+  return { supabaseUrl, publishableKey, hasSecret }
+}
+
 function secretConfigured() {
-  const env = resolveEnv()
-  return Boolean(env.data && Object.keys(env.data.secretKeys || {}).length)
+  return supabaseProcessEnv().hasSecret
 }
 
 function normalizeCompanyEmail(raw: string) {
@@ -79,13 +99,22 @@ app.onError((err, c) => {
   return c.json({ message: err instanceof Error ? err.message : 'Internal server error' }, 500)
 })
 
-app.get('/api/health', async (c) => {
-  const env = resolveEnv()
+app.get('/api/config', (c) => {
+  const env = supabaseProcessEnv()
   return c.json({
-    ok: Boolean(env.data?.url),
+    supabaseUrl: env.supabaseUrl,
+    publishableKey: env.publishableKey,
+    canStore: env.hasSecret,
+  })
+})
+
+app.get('/api/health', async (c) => {
+  const env = supabaseProcessEnv()
+  return c.json({
+    ok: Boolean(env.supabaseUrl),
     redis: await redisPing(),
-    supabase: env.error ? env.error.message : env.data?.url || 'configured',
-    hasSecret: Boolean(env.data && Object.keys(env.data.secretKeys || {}).length),
+    supabase: env.supabaseUrl || 'missing SUPABASE_URL',
+    hasSecret: env.hasSecret,
     time: new Date().toISOString(),
   })
 })
