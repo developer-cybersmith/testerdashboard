@@ -14,12 +14,48 @@ function apiBase() {
   return import.meta.env.VITE_API_URL || '/api'
 }
 
+type ServerConfig = {
+  supabaseUrl: string
+  publishableKey: string
+  canStore: boolean
+}
+
+let serverConfig: ServerConfig | null = null
+let configLoad: Promise<ServerConfig | null> | null = null
+
 export function publishableKey() {
-  return import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined
+  return (
+    serverConfig?.publishableKey ||
+    (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined) ||
+    ''
+  )
 }
 
 export function isRemoteConfigured() {
   return Boolean(publishableKey())
+}
+
+export function canStoreRemotely() {
+  return Boolean(serverConfig?.canStore)
+}
+
+/** Read SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY from the API process, not from example placeholders. */
+export function ensureRemoteConfig() {
+  if (!configLoad) {
+    configLoad = fetch(`${apiBase()}/config`)
+      .then(async (res) => {
+        if (!res.ok) return null
+        const json = (await res.json()) as Partial<ServerConfig>
+        serverConfig = {
+          supabaseUrl: json.supabaseUrl || '',
+          publishableKey: json.publishableKey || '',
+          canStore: Boolean(json.canStore),
+        }
+        return serverConfig
+      })
+      .catch(() => null)
+  }
+  return configLoad
 }
 
 export function readStoredSession() {

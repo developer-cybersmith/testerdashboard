@@ -101,6 +101,7 @@ import {
 import { publicPeople, type AppSnapshot } from '../lib/appSnapshot'
 import {
   clearStoredSession,
+  ensureRemoteConfig,
   isRemoteConfigured,
   readStoredSession,
   remoteBootstrap,
@@ -702,28 +703,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    if (!isRemoteConfigured()) return
-    const stored = readStoredSession()
-    if (!stored?.accessToken) return
-    accessTokenRef.current = stored.accessToken
-    void remoteBootstrap(stored.accessToken).then((res) => {
-      if (!res.ok) {
-        clearStoredSession()
-        accessTokenRef.current = null
-        return
-      }
-      applySnapshot(res.data.snapshot)
-      if (
-        res.data.person &&
-        res.data.person.status !== 'inactive' &&
-        res.data.person.lifecycleStatus !== 'exited'
-      ) {
-        lastActiveRef.current = Date.now()
-        setSession({ person: res.data.person, loginAt: new Date().toISOString() })
-      }
-      setSyncError(null)
-      setRemoteReady(true)
+    let cancelled = false
+    void ensureRemoteConfig().then(() => {
+      if (cancelled || !isRemoteConfigured()) return
+      const stored = readStoredSession()
+      if (!stored?.accessToken) return
+      accessTokenRef.current = stored.accessToken
+      void remoteBootstrap(stored.accessToken).then((res) => {
+        if (cancelled || !res.ok) {
+          if (!res.ok) {
+            clearStoredSession()
+            accessTokenRef.current = null
+          }
+          return
+        }
+        applySnapshot(res.data.snapshot)
+        if (
+          res.data.person &&
+          res.data.person.status !== 'inactive' &&
+          res.data.person.lifecycleStatus !== 'exited'
+        ) {
+          lastActiveRef.current = Date.now()
+          setSession({ person: res.data.person, loginAt: new Date().toISOString() })
+        }
+        setSyncError(null)
+        setRemoteReady(true)
+      })
     })
+    return () => {
+      cancelled = true
+    }
   }, [applySnapshot])
 
   const liveSnapshot: AppSnapshot = {
@@ -853,6 +862,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (raw.includes('@') && !raw.endsWith(`@${COMPANY_DOMAIN}`)) {
       return `Use a company email ending with @${COMPANY_DOMAIN}`
     }
+    await ensureRemoteConfig()
     const cleanEmail = normalizeCompanyEmail(email)
     const cleanPass = password.trim()
     if (!cleanEmail) {
@@ -970,6 +980,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ],
         notes: [],
       }
+      await ensureRemoteConfig()
       const token = accessTokenRef.current
       if (isRemoteConfigured() && !token) {
         return 'Database sign-in is not active, so this tester or team leader cannot be stored yet.'
