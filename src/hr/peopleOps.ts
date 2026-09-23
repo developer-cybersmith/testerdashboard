@@ -14,9 +14,9 @@ import type {
   WorkedDayRequest,
 } from '../types'
 
-export const EARNED_LEAVE_MAX = 12
-export const CASUAL_LEAVE_MAX = 6
-export const SICK_LEAVE_MAX = 6
+export const EARNED_LEAVE_MAX = 0
+export const CASUAL_LEAVE_MAX = 14
+export const SICK_LEAVE_MAX = 12
 export const ALL_LEAVE_MAX = EARNED_LEAVE_MAX + CASUAL_LEAVE_MAX + SICK_LEAVE_MAX
 export const PAID_LEAVE_MAX = EARNED_LEAVE_MAX
 
@@ -119,17 +119,22 @@ export function isFirstOrThirdSaturday(iso: string) {
   return occurrence === 1 || occurrence === 3
 }
 
-export function saturdayCompOffs(
+export function isWeekendDate(iso: string) {
+  const day = new Date(`${iso}T00:00:00`).getDay()
+  return day === 0 || day === 6
+}
+
+export function weekendWorkCredits(
   userId: string,
   updates: DailyUpdate[] = [],
   workedDays: WorkedDayRequest[] = [],
 ) {
   const dates = new Set<string>()
   updates.forEach((row) => {
-    if (row.userId === userId && isFirstOrThirdSaturday(row.date)) dates.add(row.date)
+    if (row.userId === userId && isWeekendDate(row.date)) dates.add(row.date)
   })
   workedDays.forEach((row) => {
-    if (row.userId === userId && row.status === 'approved' && isFirstOrThirdSaturday(row.date)) {
+    if (row.userId === userId && row.status === 'approved' && isWeekendDate(row.date)) {
       dates.add(row.date)
     }
   })
@@ -164,8 +169,8 @@ export function remainingLeave(
   if (bucket === 'sick' || bucket === 'casual') {
     return Math.max(0, leaveCap(bucket) - usedThisYear)
   }
-  const saturdayCredits = saturdayCompOffs(person.id, extras?.updates || [], extras?.workedDays || [])
-  return Math.max(0, EARNED_LEAVE_MAX + saturdayCredits - usedThisYear)
+  const weekendCredits = weekendWorkCredits(person.id, extras?.updates || [], extras?.workedDays || [])
+  return Math.max(0, EARNED_LEAVE_MAX + weekendCredits - usedThisYear)
 }
 
 export function earnedLeaveMax(
@@ -173,7 +178,7 @@ export function earnedLeaveMax(
   updates: DailyUpdate[] = [],
   workedDays: WorkedDayRequest[] = [],
 ) {
-  return EARNED_LEAVE_MAX + saturdayCompOffs(personId, updates, workedDays)
+  return EARNED_LEAVE_MAX + weekendWorkCredits(personId, updates, workedDays)
 }
 
 export function lifecycleLabel(status?: LifecycleStatus) {

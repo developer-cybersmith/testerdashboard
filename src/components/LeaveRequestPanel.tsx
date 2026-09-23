@@ -1,12 +1,11 @@
 import { useState, type FormEvent } from 'react'
 import {
   CASUAL_LEAVE_MAX,
-  EARNED_LEAVE_MAX,
   isOrgAdmin,
   SICK_LEAVE_MAX,
   useApp,
 } from '../context/AppContext'
-import { leaveKindLabel, remainingLeave } from '../hr/peopleOps'
+import { earnedLeaveMax, leaveKindLabel, remainingLeave } from '../hr/peopleOps'
 import { sanitizeText } from '../security/wstg'
 import type { LeaveKind, LeaveRequest } from '../types'
 import LeaveBalanceCards from './hr/LeaveBalanceCards'
@@ -43,7 +42,8 @@ function LeaveForm({
   const [formError, setFormError] = useState<string | null>(null)
   const person = session?.person
   const extras = { updates, workedDays: workedDayRequests }
-  const earnedLeft = person ? remainingLeave(person, leaveRequests, 'earned', extras) : EARNED_LEAVE_MAX
+  const earnedMax = person ? earnedLeaveMax(person.id, updates, workedDayRequests) : 0
+  const earnedLeft = person ? remainingLeave(person, leaveRequests, 'earned', extras) : 0
   const casualLeft = person ? remainingLeave(person, leaveRequests, 'casual', extras) : CASUAL_LEAVE_MAX
   const sickLeft = person ? remainingLeave(person, leaveRequests, 'sick', extras) : SICK_LEAVE_MAX
 
@@ -95,7 +95,7 @@ function LeaveForm({
               value={kind}
               onChange={(e) => setKind(e.target.value as LeaveKind)}
             >
-              <option value="earned">Earned ({earnedLeft} remaining of {EARNED_LEAVE_MAX})</option>
+              <option value="earned">Earned ({earnedLeft} remaining of {earnedMax})</option>
               <option value="casual">Casual ({casualLeft} remaining of {CASUAL_LEAVE_MAX})</option>
               <option value="sick">Sick ({sickLeft} remaining of {SICK_LEAVE_MAX})</option>
               <option value="other">{otherLabel}</option>
@@ -276,7 +276,7 @@ export function LeaveRequestPanel() {
               <SectionTitle title="Request your leave" />
               <LeaveForm
                 otherLabel="Other (Admin or HR approval)"
-                helper={`Earned ${EARNED_LEAVE_MAX}, casual ${CASUAL_LEAVE_MAX}, sick ${SICK_LEAVE_MAX} per year. Your leave goes to Admin or HR.`}
+                helper={`Earned leave starts at 0 and gains 1 for each Saturday or Sunday worked. Casual ${CASUAL_LEAVE_MAX} and sick ${SICK_LEAVE_MAX} per year. Your leave goes to Admin or HR.`}
               />
             </Card>
             <Card>
@@ -293,7 +293,7 @@ export function LeaveRequestPanel() {
             <SectionTitle title="Request leave" />
             <LeaveForm
               otherLabel="Other (Team Leader + Admin or HR approval)"
-              helper={`Earned ${EARNED_LEAVE_MAX}, casual ${CASUAL_LEAVE_MAX}, sick ${SICK_LEAVE_MAX} per year. Other leave does not use quota and still needs Team Leader then Admin or HR.`}
+              helper={`Earned leave starts at 0 and gains 1 for each Saturday or Sunday worked. Casual ${CASUAL_LEAVE_MAX} and sick ${SICK_LEAVE_MAX} per year. Other leave does not use quota and still needs Team Leader then Admin or HR.`}
             />
           </Card>
           <Card>

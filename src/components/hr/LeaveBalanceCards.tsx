@@ -39,11 +39,9 @@ export default function LeaveBalanceCards({ person }: { person?: Person | null }
         </Card>
       </div>
       <p className="text-[12px] text-cs-muted">
-        Earned {EARNED_LEAVE_MAX} per year
-        {saturdayCredits
-          ? ` plus ${saturdayCredits} day${saturdayCredits === 1 ? '' : 's'} for 1st / 3rd Saturdays worked`
-          : ''}
-        . Casual and sick ({CASUAL_LEAVE_MAX} each) reset every year and do not carry forward.
+        Earned leave starts at {EARNED_LEAVE_MAX}. Each Saturday or Sunday with logged work adds 1
+        {saturdayCredits ? ` (${saturdayCredits} so far)` : ''}. Casual {CASUAL_LEAVE_MAX} and sick{' '}
+        {SICK_LEAVE_MAX} reset every year and do not carry forward.
       </p>
     </div>
   )

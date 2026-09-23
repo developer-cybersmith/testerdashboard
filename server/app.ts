@@ -97,6 +97,19 @@ app.get('/api/health', async (c) => {
   })
 })
 
+app.post('/api/auth/forgot', withSupabase({ auth: 'publishable' }), async (c) => {
+  const { supabase } = c.var.supabaseContext
+  const body = (await c.req.json().catch(() => ({}))) as { email?: string }
+  const email = normalizeCompanyEmail(body.email || '')
+  if (!email) {
+    return c.json({ message: `Use a company email ending with @${COMPANY_DOMAIN}` }, 400)
+  }
+  const origin = c.req.header('origin') || 'http://localhost:5173'
+  const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: origin })
+  if (error) return c.json({ message: error.message }, 400)
+  return c.json({ ok: true })
+})
+
 app.post('/api/auth/login', withSupabase({ auth: 'publishable' }), async (c) => {
   const { supabase, supabaseAdmin } = c.var.supabaseContext
   const body = (await c.req.json().catch(() => ({}))) as { email?: string; password?: string }

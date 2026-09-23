@@ -21,7 +21,9 @@ export function canViewDirectoryPerson(
 ) {
   if (!viewer) return false
   if (viewer.id === target.id) return true
-  if (viewer.role === 'user') return target.role !== 'admin' && target.role !== 'hr'
+  if (viewer.role === 'user' || viewer.role === 'tl') {
+    return target.role !== 'admin' && target.role !== 'hr'
+  }
   return true
 }
 

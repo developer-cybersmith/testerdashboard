@@ -13,6 +13,7 @@ import {
 } from '../tl/TLViews'
 import { LeaveRequestPanel } from '../../components/LeaveRequestPanel'
 import UpdatesCalendar from '../../components/UpdatesCalendar'
+import EmployeeDetails from '../../components/EmployeeDetails'
 
 function AdminOverview() {
   const { projects, openBlockers, updates, discussions, queries } = useApp()
@@ -135,6 +136,12 @@ function AdminPeople() {
   return <EmployeesHub />
 }
 
+function HrOwnProfile() {
+  const { session } = useApp()
+  if (!session) return null
+  return <EmployeeDetails person={session.person} />
+}
+
 export function AdminDashboard({ active }: { active: NavKey }) {
   switch (active) {
     case 'projects':
@@ -157,6 +164,8 @@ export function AdminDashboard({ active }: { active: NavKey }) {
       return <LeaveRequestPanel />
     case 'people':
       return <AdminPeople />
+    case 'profile':
+      return <HrOwnProfile />
     default:
       return <AdminOverview />
   }

@@ -11,6 +11,13 @@ import { AdminDashboard } from './pages/admin/AdminViews'
 function DashboardShell() {
   const { session } = useApp()
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const [navCollapsed, setNavCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('cs-nav-collapsed') === '1'
+    } catch {
+      return false
+    }
+  })
   const [active, setActive] = useState<NavKey>('dashboard')
 
   const needsLockedProfile =
@@ -32,6 +39,14 @@ function DashboardShell() {
       setActive('profile')
     }
   }, [active, needsLockedProfile])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('cs-nav-collapsed', navCollapsed ? '1' : '0')
+    } catch {
+      /* ignore private browsing */
+    }
+  }, [navCollapsed])
 
   if (!session) return <LoginPage />
 
@@ -90,8 +105,13 @@ function DashboardShell() {
       )}
 
       <div className="mx-auto flex min-h-[calc(100vh-1rem)] max-w-[1440px] gap-3 md:min-h-[calc(100vh-1.5rem)] lg:min-h-[calc(100vh-1.5rem)]">
-        <div className="hidden lg:block">
-          <Sidebar active={active} onNavigate={onNavigate} />
+        <div className="hidden shrink-0 lg:block">
+          <Sidebar
+            active={active}
+            onNavigate={onNavigate}
+            collapsed={navCollapsed}
+            onToggleCollapsed={() => setNavCollapsed((open) => !open)}
+          />
         </div>
 
         <main className="flex min-w-0 flex-1 flex-col rounded-[28px] bg-[#f7f8fa] p-3 md:p-4 lg:px-5 lg:pb-5 lg:pt-3">

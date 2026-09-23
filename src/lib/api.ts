@@ -65,6 +65,13 @@ export async function remoteHealth() {
   return request<{ ok: boolean; redis: string; database: string }>('/health')
 }
 
+export async function remoteForgotPassword(email: string) {
+  return request<{ ok: boolean }>('/auth/forgot', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  })
+}
+
 export async function remoteLogin(email: string, password: string) {
   return request<RemoteSession>('/auth/login', {
     method: 'POST',

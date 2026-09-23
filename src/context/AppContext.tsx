@@ -499,6 +499,16 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10)
 }
 
+function confirmAfterSetup(person: Person): Person {
+  if (person.lifecycleStatus !== 'onboarding') return person
+  if (!person.avatarUploaded || person.mustChangePassword) return person
+  return {
+    ...person,
+    lifecycleStatus: 'confirmed',
+    confirmationDate: person.confirmationDate || todayISO(),
+  }
+}
+
 function uid(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`
 }
@@ -1620,7 +1630,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       if (!avatarUploaded) return 'Profile photo is required'
       setPeople((prev) =>
-        prev.map((p) => (p.id === current.id ? { ...p, avatar, avatarUploaded } : p)),
+        prev.map((p) =>
+          p.id === current.id ? confirmAfterSetup({ ...p, avatar, avatarUploaded }) : p,
+        ),
       )
       setProjects((prev) =>
         prev.map((project) => ({
@@ -1648,7 +1660,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (next === currentPassword.trim()) return 'Choose a different password'
       setPeople((prev) =>
         prev.map((p) =>
-          p.id === current.id ? { ...p, password: next, mustChangePassword: false } : p,
+          p.id === current.id
+            ? confirmAfterSetup({ ...p, password: next, mustChangePassword: false })
+            : p,
         ),
       )
       const token = accessTokenRef.current
