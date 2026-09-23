@@ -2,7 +2,7 @@ import { createAdminClient, resolveEnv } from '@supabase/server/core'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { HTTPException } from 'hono/http-exception'
-import { AuthError } from '@supabase/server'
+import { AuthError, createSupabaseContext } from '@supabase/server'
 import { withSupabase } from '@supabase/server/adapters/hono'
 import type { SupabaseContext } from '@supabase/server'
 import type { Person } from '../src/types.ts'
@@ -17,7 +17,7 @@ import {
   redisSet,
 } from './redis.ts'
 import { syncAuthUsersIntoPeople } from './ensureStaff.ts'
-import { findPersonByEmail, loadSnapshot, saveSnapshot, upsertPerson } from './store.ts'
+import { findPersonByEmail, findPersonByPhone, loadSnapshot, samePhone, saveSnapshot, toE164Phone, upsertPerson } from './store.ts'
 import { publicPeople, type AppSnapshot } from '../src/lib/appSnapshot.ts'
 
 type Env = {
@@ -119,6 +119,137 @@ app.get('/api/health', async (c) => {
   })
 })
 
+async function authUserIdByEmail(email: string) {
+  const admin = createAdminClient()
+  let page = 1
+  for (;;) {
+    const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 })
+    if (error) throw new Error(error.message)
+    const found = data.users.find((user) => user.email?.toLowerCase() === email)
+    if (found) return found.id
+    if (data.users.length < 200) return ''
+    page += 1
+  }
+}
+
+app.post('/api/auth/otp/send', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { phone?: string }
+  const phone = toE164Phone(body.phone || '')
+  if (!phone) return c.json({ message: 'Enter a valid mobile number' }, 400)
+  if (!secretConfigured()) {
+    return c.json({ message: 'Add SUPABASE_SECRET_KEY before sending a mobile OTP.' }, 503)
+  }
+  const { data: ctx, error: ctxError } = await createSupabaseContext(c.req.raw, { auth: 'publishable' })
+  if (ctxError || !ctx) return c.json({ message: ctxError?.message || 'Could not start mobile sign-in' }, 401)
+  const { supabase, supabaseAdmin } = ctx
+  const wait = await loginLocked(phone)
+  if (wait) return c.json({ message: `Too many attempts. Try again in ${wait}s` }, 429)
+
+  let found = null as Awaited<ReturnType<typeof findPersonByPhone>>
+  try {
+    found = await findPersonByPhone(supabase, phone)
+  } catch {
+    found = null
+  }
+  if (!found) {
+    try {
+      found = await findPersonByPhone(supabaseAdmin, phone)
+    } catch (err) {
+      return c.json({ message: err instanceof Error ? err.message : 'Could not read employee records' }, 503)
+    }
+  }
+  if (!found) return c.json({ message: 'That mobile number is not on an employee record' }, 404)
+  if (closedAccount(found.person)) {
+    return c.json({ message: 'This account is closed. The employee record stays in Employees for HR records.' }, 403)
+  }
+
+  try {
+    const authUserId = found.authUserId || (await authUserIdByEmail(found.person.email.toLowerCase()))
+    if (!authUserId) {
+      return c.json({ message: 'This employee does not have a database login yet.' }, 404)
+    }
+    const admin = createAdminClient()
+    const { error: phoneError } = await admin.auth.admin.updateUserById(authUserId, {
+      phone,
+      phone_confirm: true,
+    })
+    if (phoneError) return c.json({ message: phoneError.message }, 400)
+  } catch (err) {
+    return c.json({ message: err instanceof Error ? err.message : 'Could not prepare the mobile login' }, 500)
+  }
+
+  const { error } = await supabase.auth.signInWithOtp({
+    phone,
+    options: { channel: 'sms', shouldCreateUser: false },
+  })
+  if (error) return c.json({ message: error.message }, 400)
+  return c.json({ ok: true })
+})
+
+app.post('/api/auth/otp/verify', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { phone?: string; token?: string }
+  const phone = toE164Phone(body.phone || '')
+  const token = (body.token || '').replace(/\D/g, '')
+  if (!phone) return c.json({ message: 'Enter a valid mobile number' }, 400)
+  if (token.length < 4) return c.json({ message: 'Enter the OTP from the SMS' }, 400)
+  if (!secretConfigured()) {
+    return c.json({ message: 'Add SUPABASE_SECRET_KEY before sending a mobile OTP.' }, 503)
+  }
+  const { data: ctx, error: ctxError } = await createSupabaseContext(c.req.raw, { auth: 'publishable' })
+  if (ctxError || !ctx) return c.json({ message: ctxError?.message || 'Could not check the OTP' }, 401)
+  const { supabase } = ctx
+
+  const wait = await loginLocked(phone)
+  if (wait) return c.json({ message: `Too many attempts. Try again in ${wait}s` }, 429)
+
+  const { data, error } = await supabase.auth.verifyOtp({ phone, token, type: 'sms' })
+  if (error || !data.session) {
+    const fail = await recordLoginFailure(phone)
+    if (fail.locked) return c.json({ message: `Too many attempts. Try again in ${fail.wait}s` }, 429)
+    return c.json({ message: error?.message || 'That OTP is not valid' }, 401)
+  }
+
+  const adminClient = ctx.supabaseAdmin
+  let found = null as Awaited<ReturnType<typeof findPersonByPhone>>
+  try {
+    found = await findPersonByPhone(supabase, phone)
+  } catch {
+    found = null
+  }
+  if (!found && adminClient) {
+    try {
+      found = await findPersonByPhone(adminClient, phone)
+    } catch (err) {
+      return c.json({ message: err instanceof Error ? err.message : 'Could not read employee records' }, 503)
+    }
+  }
+  if (!found) return c.json({ message: 'That mobile number is not on an employee record' }, 404)
+  if (closedAccount(found.person)) {
+    return c.json({ message: 'This account is closed. The employee record stays in Employees for HR records.' }, 403)
+  }
+
+  await clearLoginFailures(phone)
+  await cachePerson(found.person)
+  let snapshot = null
+  try {
+    snapshot = await cachedBootstrap(supabase)
+  } catch {
+    if (adminClient) {
+      try {
+        snapshot = await cachedBootstrap(adminClient)
+      } catch {
+        snapshot = null
+      }
+    }
+  }
+  return c.json({
+    accessToken: data.session.access_token,
+    refreshToken: data.session.refresh_token,
+    person: found.person,
+    snapshot,
+  })
+})
+
 app.post('/api/auth/forgot', withSupabase({ auth: 'publishable' }), async (c) => {
   const { supabase } = c.var.supabaseContext
   const body = (await c.req.json().catch(() => ({}))) as { email?: string }
@@ -193,7 +324,7 @@ app.post('/api/auth/login', withSupabase({ auth: 'publishable' }), async (c) => 
     snapshot = await cachedBootstrap(supabase)
   } catch {
     try {
-      snapshot = await cachedBootstrap(supabaseAdmin)
+      snapshot = secretConfigured() ? await cachedBootstrap(c.var.supabaseContext.supabaseAdmin) : null
     } catch {
       snapshot = null
     }
@@ -217,8 +348,12 @@ app.get('/api/bootstrap', withSupabase({ auth: 'user' }), async (c) => {
   if (!snapshot) {
     return c.json({ message: 'Database is empty. Run npm run seed after applying the SQL migration.' }, 404)
   }
-  const email = userClaims?.email?.toLowerCase()
-  const person = email ? snapshot.people.find((p) => p.email.toLowerCase() === email) : undefined
+  const claims = userClaims as { email?: string; phone?: string } | null
+  const email = claims?.email?.toLowerCase()
+  const phone = claims?.phone || ''
+  const person = snapshot.people.find(
+    (p) => (email && p.email.toLowerCase() === email) || (phone && samePhone(p.phone || '', phone)),
+  )
   if (person) await cachePerson(person)
   return c.json({ person: person || null, snapshot })
 })

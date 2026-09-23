@@ -101,6 +101,20 @@ export async function remoteHealth() {
   return request<{ ok: boolean; redis: string; database: string }>('/health')
 }
 
+export async function remoteSendPhoneOtp(phone: string) {
+  return request<{ ok: boolean }>('/auth/otp/send', {
+    method: 'POST',
+    body: JSON.stringify({ phone }),
+  })
+}
+
+export async function remoteVerifyPhoneOtp(phone: string, token: string) {
+  return request<RemoteSession>('/auth/otp/verify', {
+    method: 'POST',
+    body: JSON.stringify({ phone, token }),
+  })
+}
+
 export async function remoteForgotPassword(email: string) {
   return request<{ ok: boolean }>('/auth/forgot', {
     method: 'POST',

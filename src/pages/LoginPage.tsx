@@ -1,16 +1,19 @@
 import { useState, type FormEvent } from 'react'
 import { ShieldCheck } from 'lucide-react'
 import { COMPANY_DOMAIN, useApp } from '../context/AppContext'
-import { ensureRemoteConfig, isRemoteConfigured, remoteForgotPassword } from '../lib/api'
 import { Field, PrimaryButton, inputClass } from '../components/ui'
 
 export default function LoginPage() {
-  const { loginWithEmail } = useApp()
+  const { loginWithEmail, sendPhoneOtp, loginWithPhoneOtp, resetPasswordWithPhoneOtp } = useApp()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [phone, setPhone] = useState('')
+  const [otp, setOtp] = useState('')
+  const [nextPassword, setNextPassword] = useState('')
+  const [otpMode, setOtpMode] = useState<'login' | 'reset' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [sendingReset, setSendingReset] = useState(false)
+  const [busy, setBusy] = useState(false)
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -19,27 +22,42 @@ export default function LoginPage() {
     setError(result)
   }
 
-  const forgot = async () => {
+  const sendOtp = async (mode: 'login' | 'reset') => {
     setError(null)
     setNotice(null)
-    const clean = email.trim()
-    if (!clean) {
-      setError(`Enter your company email (@${COMPANY_DOMAIN}) first`)
+    if (!phone.trim()) {
+      setError('Enter the mobile number on your employee record')
       return
     }
-    await ensureRemoteConfig()
-    if (!isRemoteConfigured()) {
-      setError('Password reset is available after database sign-in is active')
+    setBusy(true)
+    const result = await sendPhoneOtp(phone)
+    setBusy(false)
+    if (result) {
+      setError(result)
       return
     }
-    setSendingReset(true)
-    const result = await remoteForgotPassword(clean)
-    setSendingReset(false)
-    if (!result.ok) {
-      setError(result.message)
-      return
-    }
-    setNotice('If that company email is registered, a reset link has been sent.')
+    setOtpMode(mode)
+    setNotice(
+      mode === 'reset'
+        ? 'An OTP has been sent to this mobile number. Enter it and choose a new password.'
+        : 'An OTP has been sent to this mobile number.',
+    )
+  }
+
+  const verifyLogin = async () => {
+    setError(null)
+    setBusy(true)
+    const result = await loginWithPhoneOtp(phone, otp)
+    setBusy(false)
+    setError(result)
+  }
+
+  const verifyReset = async () => {
+    setError(null)
+    setBusy(true)
+    const result = await resetPasswordWithPhoneOtp(phone, otp, nextPassword)
+    setBusy(false)
+    setError(result)
   }
 
   return (
@@ -79,14 +97,55 @@ export default function LoginPage() {
               required
             />
           </Field>
+          <Field label="Mobile number">
+            <input
+              className={inputClass}
+              type="tel"
+              autoComplete="tel"
+              placeholder="+91 98765 43210"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+            />
+          </Field>
           <button
             type="button"
             className="block text-left text-[13px] font-semibold text-cs-forest"
-            onClick={() => void forgot()}
-            disabled={sendingReset}
+            onClick={() => void sendOtp('reset')}
+            disabled={busy}
           >
-            {sendingReset ? 'Sending reset link…' : 'Forget password?'}
+            Forget password?
           </button>
+          <button
+            type="button"
+            className="text-[13px] font-semibold text-cs-forest"
+            onClick={() => void sendOtp('login')}
+            disabled={busy}
+          >
+            Send OTP to sign in
+          </button>
+          {otpMode && (
+            <Field label="OTP">
+              <input
+                className={inputClass}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder="6-digit code"
+                value={otp}
+                onChange={(e) => setOtp(e.target.value)}
+              />
+            </Field>
+          )}
+          {otpMode === 'reset' && (
+            <Field label="New password">
+              <input
+                className={inputClass}
+                type="password"
+                autoComplete="new-password"
+                value={nextPassword}
+                onChange={(e) => setNextPassword(e.target.value)}
+              />
+            </Field>
+          )}
           {notice && (
             <p className="rounded-xl bg-[#edf7f1] px-3 py-2 text-[13px] font-medium text-cs-forest">{notice}</p>
           )}
@@ -94,6 +153,16 @@ export default function LoginPage() {
             <p className="rounded-xl bg-red-50 px-3 py-2 text-[13px] font-medium text-red-700">
               {error}
             </p>
+          )}
+          {otpMode === 'login' && (
+            <PrimaryButton type="button" className="w-full" onClick={() => void verifyLogin()} disabled={busy}>
+              Sign in with OTP
+            </PrimaryButton>
+          )}
+          {otpMode === 'reset' && (
+            <PrimaryButton type="button" className="w-full" onClick={() => void verifyReset()} disabled={busy}>
+              Save new password
+            </PrimaryButton>
           )}
           <PrimaryButton type="submit" className="w-full">
             Sign in
