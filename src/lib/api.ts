@@ -101,31 +101,36 @@ export async function remoteHealth() {
   return request<{ ok: boolean; redis: string; database: string }>('/health')
 }
 
-export async function remoteSendPhoneOtp(phone: string) {
-  return request<{ ok: boolean }>('/auth/otp/send', {
-    method: 'POST',
-    body: JSON.stringify({ phone }),
-  })
-}
-
-export async function remoteVerifyPhoneOtp(phone: string, token: string) {
-  return request<RemoteSession>('/auth/otp/verify', {
-    method: 'POST',
-    body: JSON.stringify({ phone, token }),
-  })
+export interface LoginChallenge {
+  challengeId: string
+  phoneHint: string
 }
 
 export async function remoteForgotPassword(email: string) {
-  return request<{ ok: boolean }>('/auth/forgot', {
+  return request<LoginChallenge>('/auth/forgot', {
     method: 'POST',
     body: JSON.stringify({ email }),
   })
 }
 
 export async function remoteLogin(email: string, password: string) {
-  return request<RemoteSession>('/auth/login', {
+  return request<LoginChallenge>('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
+  })
+}
+
+export async function remoteVerifyLoginOtp(challengeId: string, token: string) {
+  return request<RemoteSession>('/auth/otp/verify', {
+    method: 'POST',
+    body: JSON.stringify({ challengeId, token }),
+  })
+}
+
+export async function remoteCompletePasswordReset(challengeId: string, token: string, password: string) {
+  return request<RemoteSession>('/auth/otp/reset', {
+    method: 'POST',
+    body: JSON.stringify({ challengeId, token, password }),
   })
 }
 
