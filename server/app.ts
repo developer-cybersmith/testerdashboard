@@ -17,7 +17,10 @@ import {
   redisSet,
 } from './redis.ts'
 import { syncAuthUsersIntoPeople } from './ensureStaff.ts'
-import { findPersonByEmail, findPersonByPhone, loadSnapshot, samePhone, saveSnapshot, toE164Phone, upsertPerson } from './store.ts'
+import { deleteChallenge, hashOtp, newChallengeId, newOtpCode, otpMatches, readChallenge, saveChallenge } from './otpChallenge.ts'
+import { sendTwilioSms, twilioConfigured } from './twilio.ts'
+import { findPersonByEmail, loadSnapshot, samePhone, saveSnapshot, toE164Phone, upsertPerson } from './store.ts'
+import { isStrongPassword, PASSWORD_POLICY } from '../src/security/wstg.ts'
 import { publicPeople, type AppSnapshot } from '../src/lib/appSnapshot.ts'
 
 type Env = {
@@ -93,6 +96,15 @@ app.use(
 app.onError((err, c) => {
   if (err instanceof HTTPException && err.cause instanceof AuthError) {
     const authError = err.cause
+    if (authError.code === 'MISSING_DEFAULT_SECRET_KEY') {
+      return c.json(
+        {
+          message:
+            'Add SUPABASE_SECRET_KEY on the server. The OTP is sent to the mobile number stored on the employee account, and that record cannot be read without this key.',
+        },
+        503,
+      )
+    }
     return c.json({ message: authError.message, code: authError.code }, authError.status as 401 | 500)
   }
   console.error(err)
@@ -113,154 +125,179 @@ app.get('/api/health', async (c) => {
   return c.json({
     ok: Boolean(env.supabaseUrl),
     redis: await redisPing(),
+    twilio: twilioConfigured() ? 'configured' : 'missing',
     supabase: env.supabaseUrl || 'missing SUPABASE_URL',
     hasSecret: env.hasSecret,
     time: new Date().toISOString(),
   })
 })
 
-async function authUserIdByEmail(email: string) {
-  const admin = createAdminClient()
-  let page = 1
-  for (;;) {
-    const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 })
-    if (error) throw new Error(error.message)
-    const found = data.users.find((user) => user.email?.toLowerCase() === email)
-    if (found) return found.id
-    if (data.users.length < 200) return ''
-    page += 1
+function maskPhone(e164: string) {
+  const digits = e164.replace(/\D/g, '')
+  return `+${digits.slice(0, Math.min(2, digits.length - 4))} •••• ${digits.slice(-4)}`
+}
+
+async function issueAccountOtp(input: {
+  purpose: 'login' | 'reset'
+  email: string
+  authUserId: string | null
+  accessToken: string
+  refreshToken: string
+  person: Person
+  snapshot: AppSnapshot | null
+}) {
+  const phone = toE164Phone(input.person.phone || '')
+  if (!phone) {
+    return {
+      status: 400 as const,
+      body: { message: 'This account has no mobile number. Ask HR to add it on the employee record.' },
+    }
+  }
+  if (!twilioConfigured()) {
+    return {
+      status: 503 as const,
+      body: {
+        message:
+          'Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_MESSAGING_SERVICE_SID on the server before an OTP can be sent.',
+      },
+    }
+  }
+  const challengeId = newChallengeId()
+  const otp = newOtpCode()
+  await saveChallenge(challengeId, {
+    purpose: input.purpose,
+    email: input.email,
+    authUserId: input.authUserId,
+    otpHash: hashOtp(challengeId, otp),
+    accessToken: input.accessToken,
+    refreshToken: input.refreshToken,
+    person: input.person,
+    snapshot: input.snapshot,
+    attempts: 0,
+  })
+  try {
+    const action = input.purpose === 'reset' ? 'password reset' : 'login'
+    await sendTwilioSms(phone, `Your Cybersmith Secure ${action} code is ${otp}. It expires in 5 minutes.`)
+  } catch (err) {
+    await deleteChallenge(challengeId)
+    return {
+      status: 502 as const,
+      body: { message: err instanceof Error ? err.message : 'Could not send the OTP' },
+    }
+  }
+  return {
+    status: 200 as const,
+    body: { challengeId, phoneHint: maskPhone(phone) },
   }
 }
 
-app.post('/api/auth/otp/send', async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { phone?: string }
-  const phone = toE164Phone(body.phone || '')
-  if (!phone) return c.json({ message: 'Enter a valid mobile number' }, 400)
-  if (!secretConfigured()) {
-    return c.json({ message: 'Add SUPABASE_SECRET_KEY before sending a mobile OTP.' }, 503)
-  }
-  const { data: ctx, error: ctxError } = await createSupabaseContext(c.req.raw, { auth: 'publishable' })
-  if (ctxError || !ctx) return c.json({ message: ctxError?.message || 'Could not start mobile sign-in' }, 401)
-  const { supabase, supabaseAdmin } = ctx
-  const wait = await loginLocked(phone)
-  if (wait) return c.json({ message: `Too many attempts. Try again in ${wait}s` }, 429)
-
-  let found = null as Awaited<ReturnType<typeof findPersonByPhone>>
-  try {
-    found = await findPersonByPhone(supabase, phone)
-  } catch {
-    found = null
-  }
-  if (!found) {
-    try {
-      found = await findPersonByPhone(supabaseAdmin, phone)
-    } catch (err) {
-      return c.json({ message: err instanceof Error ? err.message : 'Could not read employee records' }, 503)
-    }
-  }
-  if (!found) return c.json({ message: 'That mobile number is not on an employee record' }, 404)
-  if (closedAccount(found.person)) {
-    return c.json({ message: 'This account is closed. The employee record stays in Employees for HR records.' }, 403)
-  }
-
-  try {
-    const authUserId = found.authUserId || (await authUserIdByEmail(found.person.email.toLowerCase()))
-    if (!authUserId) {
-      return c.json({ message: 'This employee does not have a database login yet.' }, 404)
-    }
-    const admin = createAdminClient()
-    const { error: phoneError } = await admin.auth.admin.updateUserById(authUserId, {
-      phone,
-      phone_confirm: true,
-    })
-    if (phoneError) return c.json({ message: phoneError.message }, 400)
-  } catch (err) {
-    return c.json({ message: err instanceof Error ? err.message : 'Could not prepare the mobile login' }, 500)
-  }
-
-  const { error } = await supabase.auth.signInWithOtp({
-    phone,
-    options: { channel: 'sms', shouldCreateUser: false },
-  })
-  if (error) return c.json({ message: error.message }, 400)
-  return c.json({ ok: true })
-})
-
 app.post('/api/auth/otp/verify', async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { phone?: string; token?: string }
-  const phone = toE164Phone(body.phone || '')
+  const body = (await c.req.json().catch(() => ({}))) as { challengeId?: string; token?: string }
+  const challengeId = (body.challengeId || '').trim()
   const token = (body.token || '').replace(/\D/g, '')
-  if (!phone) return c.json({ message: 'Enter a valid mobile number' }, 400)
-  if (token.length < 4) return c.json({ message: 'Enter the OTP from the SMS' }, 400)
-  if (!secretConfigured()) {
-    return c.json({ message: 'Add SUPABASE_SECRET_KEY before sending a mobile OTP.' }, 503)
-  }
-  const { data: ctx, error: ctxError } = await createSupabaseContext(c.req.raw, { auth: 'publishable' })
-  if (ctxError || !ctx) return c.json({ message: ctxError?.message || 'Could not check the OTP' }, 401)
-  const { supabase } = ctx
-
-  const wait = await loginLocked(phone)
+  if (!challengeId || token.length < 6) return c.json({ message: 'Enter the 6-digit OTP from the SMS' }, 400)
+  const challenge = await readChallenge(challengeId)
+  if (!challenge || challenge.purpose !== 'login') return c.json({ message: 'That OTP has expired. Sign in again.' }, 401)
+  const wait = await loginLocked(challenge.email)
   if (wait) return c.json({ message: `Too many attempts. Try again in ${wait}s` }, 429)
-
-  const { data, error } = await supabase.auth.verifyOtp({ phone, token, type: 'sms' })
-  if (error || !data.session) {
-    const fail = await recordLoginFailure(phone)
-    if (fail.locked) return c.json({ message: `Too many attempts. Try again in ${fail.wait}s` }, 429)
-    return c.json({ message: error?.message || 'That OTP is not valid' }, 401)
-  }
-
-  const adminClient = ctx.supabaseAdmin
-  let found = null as Awaited<ReturnType<typeof findPersonByPhone>>
-  try {
-    found = await findPersonByPhone(supabase, phone)
-  } catch {
-    found = null
-  }
-  if (!found && adminClient) {
-    try {
-      found = await findPersonByPhone(adminClient, phone)
-    } catch (err) {
-      return c.json({ message: err instanceof Error ? err.message : 'Could not read employee records' }, 503)
+  if (!otpMatches(challengeId, token, challenge.otpHash)) {
+    const attempts = challenge.attempts + 1
+    if (attempts >= 5) {
+      await deleteChallenge(challengeId)
+      const fail = await recordLoginFailure(challenge.email)
+      if (fail.locked) return c.json({ message: `Too many attempts. Try again in ${fail.wait}s` }, 429)
+    } else {
+      await saveChallenge(challengeId, { ...challenge, attempts })
     }
+    return c.json({ message: 'That OTP is not valid' }, 401)
   }
-  if (!found) return c.json({ message: 'That mobile number is not on an employee record' }, 404)
-  if (closedAccount(found.person)) {
-    return c.json({ message: 'This account is closed. The employee record stays in Employees for HR records.' }, 403)
-  }
-
-  await clearLoginFailures(phone)
-  await cachePerson(found.person)
-  let snapshot = null
-  try {
-    snapshot = await cachedBootstrap(supabase)
-  } catch {
-    if (adminClient) {
-      try {
-        snapshot = await cachedBootstrap(adminClient)
-      } catch {
-        snapshot = null
-      }
-    }
-  }
+  await deleteChallenge(challengeId)
+  await clearLoginFailures(challenge.email)
   return c.json({
-    accessToken: data.session.access_token,
-    refreshToken: data.session.refresh_token,
-    person: found.person,
-    snapshot,
+    accessToken: challenge.accessToken,
+    refreshToken: challenge.refreshToken,
+    person: challenge.person,
+    snapshot: challenge.snapshot,
   })
 })
 
 app.post('/api/auth/forgot', withSupabase({ auth: 'publishable' }), async (c) => {
-  const { supabase } = c.var.supabaseContext
+  const { supabase, supabaseAdmin } = c.var.supabaseContext
   const body = (await c.req.json().catch(() => ({}))) as { email?: string }
   const email = normalizeCompanyEmail(body.email || '')
   if (!email) {
     return c.json({ message: `Use a company email ending with @${COMPANY_DOMAIN}` }, 400)
   }
-  const origin = c.req.header('origin') || 'http://localhost:5173'
-  const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: origin })
-  if (error) return c.json({ message: error.message }, 400)
-  return c.json({ ok: true })
+  const wait = await loginLocked(email)
+  if (wait) return c.json({ message: `Too many attempts. Try again in ${wait}s` }, 429)
+  let found = null as Awaited<ReturnType<typeof findPersonByEmail>>
+  try {
+    found = await findPersonByEmail(supabase, email)
+  } catch {
+    found = null
+  }
+  if (!found && secretConfigured()) {
+    try {
+      found = await findPersonByEmail(supabaseAdmin, email)
+    } catch (err) {
+      return c.json({ message: err instanceof Error ? err.message : 'Could not read employee records' }, 503)
+    }
+  }
+  if (!found) return c.json({ message: 'That company email is not on an employee record' }, 404)
+  if (closedAccount(found.person)) {
+    return c.json({ message: 'This account is closed. The employee record stays in Employees for HR records.' }, 403)
+  }
+  const issued = await issueAccountOtp({
+    purpose: 'reset',
+    email,
+    authUserId: found.authUserId,
+    accessToken: '',
+    refreshToken: '',
+    person: found.person,
+    snapshot: null,
+  })
+  return c.json(issued.body, issued.status)
+})
+
+app.post('/api/auth/otp/reset', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    challengeId?: string
+    token?: string
+    password?: string
+  }
+  const challengeId = (body.challengeId || '').trim()
+  const token = (body.token || '').replace(/\D/g, '')
+  const password = (body.password || '').trim()
+  if (!challengeId || token.length < 6) return c.json({ message: 'Enter the 6-digit OTP from the SMS' }, 400)
+  if (!isStrongPassword(password)) return c.json({ message: PASSWORD_POLICY }, 400)
+  const challenge = await readChallenge(challengeId)
+  if (!challenge || challenge.purpose !== 'reset') {
+    return c.json({ message: 'That OTP has expired. Request a new code.' }, 401)
+  }
+  if (!otpMatches(challengeId, token, challenge.otpHash)) {
+    const attempts = challenge.attempts + 1
+    if (attempts >= 5) await deleteChallenge(challengeId)
+    else await saveChallenge(challengeId, { ...challenge, attempts })
+    return c.json({ message: 'That OTP is not valid' }, 401)
+  }
+  if (!secretConfigured() || !challenge.authUserId) {
+    return c.json({ message: 'Add SUPABASE_SECRET_KEY before the password can be saved.' }, 503)
+  }
+  const admin = createAdminClient()
+  const { error: passwordError } = await admin.auth.admin.updateUserById(challenge.authUserId, { password })
+  if (passwordError) return c.json({ message: passwordError.message }, 400)
+  const { data: ctx, error: ctxError } = await createSupabaseContext(c.req.raw, { auth: 'publishable' })
+  if (ctxError || !ctx) return c.json({ message: ctxError?.message || 'Could not sign in with the new password' }, 401)
+  const { data, error } = await ctx.supabase.auth.signInWithPassword({ email: challenge.email, password })
+  if (error || !data.session) return c.json({ message: error?.message || 'Could not sign in with the new password' }, 401)
+  await deleteChallenge(challengeId)
+  const person = { ...challenge.person, mustChangePassword: false }
+  return c.json({
+    accessToken: data.session.access_token,
+    refreshToken: data.session.refresh_token,
+    person,
+    snapshot: challenge.snapshot,
+  })
 })
 
 app.post('/api/auth/login', withSupabase({ auth: 'publishable' }), async (c) => {
@@ -329,12 +366,16 @@ app.post('/api/auth/login', withSupabase({ auth: 'publishable' }), async (c) => 
       snapshot = null
     }
   }
-  return c.json({
+  const issued = await issueAccountOtp({
+    purpose: 'login',
+    email,
+    authUserId: found.authUserId,
     accessToken: data.session.access_token,
     refreshToken: data.session.refresh_token,
     person: found.person,
     snapshot,
   })
+  return c.json(issued.body, issued.status)
 })
 
 app.get('/api/bootstrap', withSupabase({ auth: 'user' }), async (c) => {
