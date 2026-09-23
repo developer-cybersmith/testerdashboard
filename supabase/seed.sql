@@ -28,10 +28,10 @@ values
       "confirmationDate": "2019-11-20",
       "shiftId": "shift-general",
       "leaveBalance": {
-        "allUsed": 0, "allMax": 24,
-        "annualUsed": 0, "annualMax": 12,
-        "casualUsed": 0, "casualMax": 6,
-        "sickUsed": 0, "sickMax": 6
+        "allUsed": 0, "allMax": 26,
+        "annualUsed": 0, "annualMax": 0,
+        "casualUsed": 0, "casualMax": 14,
+        "sickUsed": 0, "sickMax": 12
       }
     }'::jsonb
   ),
@@ -60,10 +60,10 @@ values
       "confirmationDate": "2021-03-08",
       "shiftId": "shift-general",
       "leaveBalance": {
-        "allUsed": 0, "allMax": 24,
-        "annualUsed": 0, "annualMax": 12,
-        "casualUsed": 0, "casualMax": 6,
-        "sickUsed": 0, "sickMax": 6
+        "allUsed": 0, "allMax": 26,
+        "annualUsed": 0, "annualMax": 0,
+        "casualUsed": 0, "casualMax": 14,
+        "sickUsed": 0, "sickMax": 12
       }
     }'::jsonb
   ),
@@ -93,10 +93,10 @@ values
       "contractEndDate": "2027-01-11",
       "shiftId": "shift-general",
       "leaveBalance": {
-        "allUsed": 0, "allMax": 24,
-        "annualUsed": 0, "annualMax": 12,
-        "casualUsed": 0, "casualMax": 6,
-        "sickUsed": 0, "sickMax": 6
+        "allUsed": 0, "allMax": 26,
+        "annualUsed": 0, "annualMax": 0,
+        "casualUsed": 0, "casualMax": 14,
+        "sickUsed": 0, "sickMax": 12
       }
     }'::jsonb
   )

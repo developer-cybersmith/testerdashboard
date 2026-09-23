@@ -172,14 +172,12 @@ function AddEmployeeForm() {
           </select>
         </Field>
         <Field label="Location">
-          <select className={inputClass} value={location} onChange={(e) => setLocation(e.target.value)}>
-            <option value="">Select city</option>
-            {OFFICE_LOCATIONS.map((city) => (
-              <option key={city} value={city}>
-                {city}
-              </option>
-            ))}
-          </select>
+          <input
+            className={inputClass}
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            placeholder="Type the city"
+          />
         </Field>
         <Field label="Phone">
           <input className={inputClass} value={phone} onChange={(e) => setPhone(e.target.value)} />
@@ -227,7 +225,7 @@ function DirectoryTab() {
   const skills = [...new Set(visiblePeople.flatMap((p) => p.skills || []))]
   const selected = visiblePeople.find((p) => p.id === openId)
   const managerName = (id?: string) => personLabel(people.find((p) => p.id === id))
-  const testerView = session?.person.role === 'user'
+  const hideOrgRoles = session?.person.role === 'user' || session?.person.role === 'tl'
 
   const filtered = visiblePeople.filter((p) => {
     if (q && !matchesEmployeeSearch(p, q)) return false
@@ -290,8 +288,8 @@ function DirectoryTab() {
           </select>
           <select className={inputClass} value={role} onChange={(e) => setRole(e.target.value)}>
             <option value="">All roles</option>
-            {!testerView && <option value="admin">Admin</option>}
-            {!testerView && <option value="hr">HR</option>}
+            {!hideOrgRoles && <option value="admin">Admin</option>}
+            {!hideOrgRoles && <option value="hr">HR</option>}
             <option value="tl">Team Leader</option>
             <option value="user">Tester</option>
           </select>
@@ -310,7 +308,10 @@ function DirectoryTab() {
             <button type="button" className="flex w-full items-start gap-3 text-left" onClick={() => setSelectedId(p.id)}>
               <img src={p.avatar} alt="" className="h-14 w-14 rounded-full object-cover" />
               <div className="min-w-0">
-                <p className="text-[14px] font-semibold text-cs-ink">{p.name}</p>
+                <p className="text-[14px] font-semibold text-cs-ink">
+                  {p.employeeCode ? `${p.employeeCode} ` : ''}
+                  {p.name}
+                </p>
                 <p className="text-[12px] font-medium text-cs-forest">{p.jobTitle || roleLabel(p.role)}</p>
                 <p className="text-[12px] text-cs-muted">{p.department || '—'} · {p.location || '—'}</p>
                 <p className="text-[12px] text-cs-muted">Manager: {p.managerId ? managerName(p.managerId) : '—'}</p>
@@ -320,7 +321,6 @@ function DirectoryTab() {
                     {lifecycleLabel(p.lifecycleStatus)}
                   </Badge>
                   <Badge tone="forest">{roleLabel(p.role)}</Badge>
-                  {p.employeeCode && <Badge>{p.employeeCode}</Badge>}
                 </div>
                 {p.skills?.length ? (
                   <div className="mt-2 flex flex-wrap gap-1">
@@ -460,7 +460,10 @@ function LifecycleCard({ personId }: { personId: string }) {
     <Card>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-[14px] font-semibold text-cs-ink">{person.name}</p>
+          <p className="text-[14px] font-semibold text-cs-ink">
+            {person.employeeCode ? `${person.employeeCode} ` : ''}
+            {person.name}
+          </p>
           <p className="text-[12px] text-cs-muted">
             {lifecycleLabel(person.lifecycleStatus)}
             {person.jobTitle ? ` · ${person.jobTitle}` : ''}

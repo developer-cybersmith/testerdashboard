@@ -180,15 +180,18 @@ export default function EmployeeDetails({ person }: { person: Person }) {
   }, [series])
 
   return (
-    <div className="grid min-w-0 gap-4 xl:grid-cols-12">
-      <div className="min-w-0 space-y-4 xl:col-span-3">
+    <div className="grid min-w-0 items-stretch gap-4 xl:min-h-[calc(100dvh-17rem)] xl:grid-cols-12">
+      <div className="min-w-0 space-y-4 xl:col-span-4">
         <Card>
           <img
             src={person.avatar}
             alt=""
-            className="mb-4 h-44 w-full rounded-2xl object-cover"
+            className="mb-4 h-52 w-full rounded-2xl object-cover"
           />
-          <h2 className="text-[20px] font-bold text-cs-ink">{person.name}</h2>
+          <h2 className="text-[20px] font-bold text-cs-ink">
+            {person.employeeCode ? `${person.employeeCode} ` : ''}
+            {person.name}
+          </h2>
           <p className="text-[13px] text-cs-muted">
             {person.jobTitle || roleLabel(person.role)}
             {person.department ? ` | ${person.department}` : ''}
@@ -271,7 +274,9 @@ export default function EmployeeDetails({ person }: { person: Person }) {
         </Card>
       </div>
 
-      <div className="min-w-0 space-y-4 xl:col-span-6">
+      <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 xl:col-span-8">
+      <div className={`grid shrink-0 min-w-0 items-start gap-4 ${canSeeWorkStats ? 'xl:grid-cols-5' : ''}`}>
+      <div className={`min-w-0 space-y-4 ${canSeeWorkStats ? 'xl:col-span-3' : ''}`}>
         <div className="grid min-w-0 gap-3">
           <LeaveStat
             label="Earned Leaves"
@@ -289,8 +294,8 @@ export default function EmployeeDetails({ person }: { person: Person }) {
             max={SICK_LEAVE_MAX}
           />
           <p className="text-[12px] leading-relaxed text-cs-muted">
-            {EARNED_LEAVE_MAX} earned plus 1st / 3rd Saturday work credits. Casual and sick ({CASUAL_LEAVE_MAX} each)
-            do not carry to the next year.
+            Earned leave starts at {EARNED_LEAVE_MAX}. Each Saturday or Sunday worked adds 1. Casual{' '}
+            {CASUAL_LEAVE_MAX} and sick {SICK_LEAVE_MAX} do not carry to the next year.
           </p>
           {person.skills?.length ? (
             <div className="flex flex-wrap gap-1">
@@ -388,95 +393,13 @@ export default function EmployeeDetails({ person }: { person: Person }) {
           </>
           )}
         </Card>
-
-        <Card>
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <div>
-              <h3 className="text-[15px] font-bold text-cs-ink">Hours Logged</h3>
-              <p className="text-[11px] text-cs-muted">
-                {weeks[0]?.label.split('–')[0].trim()} – {weeks[3]?.label.split('–')[1]?.trim()} · 4 weeks
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <p className="text-[12px] font-semibold text-cs-forest">{weeksTotal.toFixed(1)} hrs</p>
-              <button
-                type="button"
-                className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#edf7f1] text-cs-forest disabled:opacity-40"
-                onClick={() =>
-                  setWeekMonday((d) => {
-                    const next = shiftMonday(d, -4)
-                    if (!joinMonday) return next
-                    const windowStart = shiftMonday(next, -3)
-                    if (windowStart.getTime() < joinMonday.getTime()) {
-                      const clamped = shiftMonday(joinMonday, 3)
-                      return clamped.getTime() > thisMonday.getTime() ? thisMonday : clamped
-                    }
-                    return next
-                  })
-                }
-                disabled={!canWeekBack}
-                aria-label="Previous 4 weeks"
-              >
-                <ChevronLeft size={16} />
-              </button>
-              <button
-                type="button"
-                className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#edf7f1] text-cs-forest disabled:opacity-40"
-                onClick={() =>
-                  setWeekMonday((d) => {
-                    const next = shiftMonday(d, 4)
-                    return next.getTime() > thisMonday.getTime() ? thisMonday : next
-                  })
-                }
-                disabled={!canWeekForward}
-                aria-label="Next 4 weeks"
-              >
-                <ChevronRight size={16} />
-              </button>
-            </div>
-          </div>
-          <div className="space-y-3">
-            {weeks.map((week) => (
-              <div key={week.startISO}>
-                <div className="mb-1 flex items-center justify-between">
-                  <p className="text-[12px] font-semibold text-cs-ink">{week.label}</p>
-                  <p className="text-[11px] font-semibold text-cs-forest">{week.total.toFixed(1)} hrs</p>
-                </div>
-                <div className="flex h-16 items-end gap-1.5">
-                  {week.days.map((d) => (
-                    <div
-                      key={d.date}
-                      className="flex flex-1 flex-col items-center gap-0.5"
-                      title={`${d.label} ${d.date} · ${d.hours}h`}
-                    >
-                      <span className="text-[9px] font-semibold text-cs-ink">{d.hours || ''}</span>
-                      <div
-                        className={`w-full rounded-t-md ${
-                          d.mark === 'present'
-                            ? 'bg-cs-forest'
-                            : d.mark === 'half'
-                              ? 'bg-[#facc15]'
-                              : d.mark === 'leave'
-                                ? 'bg-[#86efac]'
-                                : 'bg-[#d1d5db]'
-                        }`}
-                        style={{ height: `${Math.max(d.hours ? 8 : 4, (d.hours / maxBar) * 100)}%` }}
-                      />
-                      <span className="text-[9px] text-cs-muted">{d.label.slice(0, 3)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
         </>
         )}
       </div>
 
       {canSeeWorkStats && (
-      <div className="min-w-0 xl:col-span-3">
-        <Card className="h-full">
+      <div className="min-w-0 self-start xl:col-span-2">
+        <Card>
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-[15px] font-bold text-cs-ink">
               {MONTHS[month]} {year}
@@ -549,13 +472,99 @@ export default function EmployeeDetails({ person }: { person: Person }) {
               <span className="h-2.5 w-2.5 rounded-sm bg-cs-forest" /> On Leave
             </span>
           </div>
-          <p className="mt-6 text-[12px] leading-relaxed text-cs-muted">
+          <p className="mt-4 text-[12px] leading-relaxed text-cs-muted">
             Viewing {personLabel(person)}. Calendar and graphs use attendance plus daily hours for every
             working day on this record. Payroll is not shown.
           </p>
         </Card>
       </div>
       )}
+      </div>
+
+      {canSeeWorkStats && (
+        <Card className="flex min-h-[240px] flex-1 flex-col">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <div>
+              <h3 className="text-[15px] font-bold text-cs-ink">Hours Logged</h3>
+              <p className="text-[11px] text-cs-muted">
+                {weeks[0]?.label.split('–')[0].trim()} – {weeks[3]?.label.split('–')[1]?.trim()} · 4 weeks
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <p className="text-[12px] font-semibold text-cs-forest">{weeksTotal.toFixed(1)} hrs</p>
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#edf7f1] text-cs-forest disabled:opacity-40"
+                onClick={() =>
+                  setWeekMonday((d) => {
+                    const next = shiftMonday(d, -4)
+                    if (!joinMonday) return next
+                    const windowStart = shiftMonday(next, -3)
+                    if (windowStart.getTime() < joinMonday.getTime()) {
+                      const clamped = shiftMonday(joinMonday, 3)
+                      return clamped.getTime() > thisMonday.getTime() ? thisMonday : clamped
+                    }
+                    return next
+                  })
+                }
+                disabled={!canWeekBack}
+                aria-label="Previous 4 weeks"
+              >
+                <ChevronLeft size={16} />
+              </button>
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#edf7f1] text-cs-forest disabled:opacity-40"
+                onClick={() =>
+                  setWeekMonday((d) => {
+                    const next = shiftMonday(d, 4)
+                    return next.getTime() > thisMonday.getTime() ? thisMonday : next
+                  })
+                }
+                disabled={!canWeekForward}
+                aria-label="Next 4 weeks"
+              >
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          </div>
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
+            {weeks.map((week) => (
+              <div key={week.startISO} className="flex min-h-0 flex-1 flex-col">
+                <div className="mb-1 flex items-center justify-between">
+                  <p className="text-[12px] font-semibold text-cs-ink">{week.label}</p>
+                  <p className="text-[11px] font-semibold text-cs-forest">{week.total.toFixed(1)} hrs</p>
+                </div>
+                <div className="flex min-h-28 flex-1 items-end gap-1.5">
+                  {week.days.map((d) => (
+                    <div
+                      key={d.date}
+                      className="flex flex-1 flex-col items-center gap-0.5"
+                      title={`${d.label} ${d.date} · ${d.hours}h`}
+                    >
+                      <span className="text-[9px] font-semibold text-cs-ink">{d.hours || ''}</span>
+                      <div
+                        className={`w-full rounded-t-md ${
+                          d.mark === 'present'
+                            ? 'bg-cs-forest'
+                            : d.mark === 'half'
+                              ? 'bg-[#facc15]'
+                              : d.mark === 'leave'
+                                ? 'bg-[#86efac]'
+                                : 'bg-[#d1d5db]'
+                        }`}
+                        style={{ height: `${Math.max(d.hours ? 8 : 4, (d.hours / maxBar) * 100)}%` }}
+                      />
+                      <span className="text-[9px] text-cs-muted">{d.label.slice(0, 3)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+      </div>
     </div>
   )
 }

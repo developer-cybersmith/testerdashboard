@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { ShieldCheck } from 'lucide-react'
 import { COMPANY_DOMAIN, useApp } from '../context/AppContext'
+import { isRemoteConfigured, remoteForgotPassword } from '../lib/api'
 import { Field, PrimaryButton, inputClass } from '../components/ui'
 
 export default function LoginPage() {
@@ -8,11 +9,36 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [sendingReset, setSendingReset] = useState(false)
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
+    setNotice(null)
     const result = await loginWithEmail(email, password)
     setError(result)
+  }
+
+  const forgot = async () => {
+    setError(null)
+    setNotice(null)
+    const clean = email.trim()
+    if (!clean) {
+      setError(`Enter your company email (@${COMPANY_DOMAIN}) first`)
+      return
+    }
+    if (!isRemoteConfigured()) {
+      setError('Password reset is available after database sign-in is active')
+      return
+    }
+    setSendingReset(true)
+    const result = await remoteForgotPassword(clean)
+    setSendingReset(false)
+    if (!result.ok) {
+      setError(result.message)
+      return
+    }
+    setNotice('If that company email is registered, a reset link has been sent.')
   }
 
   return (
@@ -52,6 +78,17 @@ export default function LoginPage() {
               required
             />
           </Field>
+          <button
+            type="button"
+            className="block text-left text-[13px] font-semibold text-cs-forest"
+            onClick={() => void forgot()}
+            disabled={sendingReset}
+          >
+            {sendingReset ? 'Sending reset link…' : 'Forget password?'}
+          </button>
+          {notice && (
+            <p className="rounded-xl bg-[#edf7f1] px-3 py-2 text-[13px] font-medium text-cs-forest">{notice}</p>
+          )}
           {error && (
             <p className="rounded-xl bg-red-50 px-3 py-2 text-[13px] font-medium text-red-700">
               {error}

@@ -3,7 +3,7 @@ import { useState } from 'react'
 import type { Project, RequirementStatus } from '../types'
 import { REQUIREMENT_STATUS_OPTIONS, requirementStatusLabel } from '../types'
 import { Badge, Modal, PrimaryButton, SecondaryButton, inputClass } from './ui'
-import { isOrgAdmin, personLabel, publicRoleLabel, sortBlockersByPriority, useApp } from '../context/AppContext'
+import { canViewDirectoryPerson, isOrgAdmin, personLabel, publicRoleLabel, sortBlockersByPriority, useApp } from '../context/AppContext'
 import EmployeeDetails from './EmployeeDetails'
 
 function requirementTone(status: RequirementStatus) {
@@ -34,7 +34,6 @@ export default function ProjectDetailModal({
   } = useApp()
   const [profileId, setProfileId] = useState<string | null>(null)
   const viewerRole = session?.person.role
-  const canViewProfiles = isOrgAdmin(viewerRole) || viewerRole === 'tl'
   const canManage = isOrgAdmin(viewerRole) || viewerRole === 'tl'
   const liveProject = projects.find((p) => p.id === project.id) || project
   const profilePerson = people.find((p) => p.id === profileId)
@@ -42,7 +41,7 @@ export default function ProjectDetailModal({
     blockers.filter((b) => b.projectId === liveProject.id && b.status !== 'resolved'),
   )
 
-  if (profilePerson && canViewProfiles) {
+  if (profilePerson && canViewDirectoryPerson(session?.person, profilePerson)) {
     return (
       <Modal title={profilePerson.name} onClose={onClose} wide>
         <SecondaryButton className="mb-4" onClick={() => setProfileId(null)}>
@@ -92,7 +91,7 @@ export default function ProjectDetailModal({
                     <p className="text-[11px] text-cs-muted">{publicRoleLabel(m, viewerRole)}</p>
                   )}
                 </div>
-                {canViewProfiles && (
+                {canViewDirectoryPerson(session?.person, m) && (
                   <button
                     type="button"
                     className="text-[12px] font-semibold text-cs-forest"
