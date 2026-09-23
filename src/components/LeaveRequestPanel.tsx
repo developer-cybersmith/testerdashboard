@@ -276,7 +276,7 @@ export function LeaveRequestPanel() {
               <SectionTitle title="Request your leave" />
               <LeaveForm
                 otherLabel="Other (Admin or HR approval)"
-                helper={`Earned leave starts at 0 and gains 1 for each Saturday or Sunday worked. Casual ${CASUAL_LEAVE_MAX} and sick ${SICK_LEAVE_MAX} per year. Your leave goes to Admin or HR.`}
+                helper="Your leave goes to Admin or HR."
               />
             </Card>
             <Card>
@@ -293,7 +293,7 @@ export function LeaveRequestPanel() {
             <SectionTitle title="Request leave" />
             <LeaveForm
               otherLabel="Other (Team Leader + Admin or HR approval)"
-              helper={`Earned leave starts at 0 and gains 1 for each Saturday or Sunday worked. Casual ${CASUAL_LEAVE_MAX} and sick ${SICK_LEAVE_MAX} per year. Other leave does not use quota and still needs Team Leader then Admin or HR.`}
+              helper="Other leave does not use quota and still needs Team Leader then Admin or HR."
             />
           </Card>
           <Card>

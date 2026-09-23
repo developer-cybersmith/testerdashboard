@@ -1,16 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import {
-  ChevronLeft,
-  ChevronRight,
-  Globe,
-  Mail,
-  MapPin,
-  Phone,
-  Share2,
-} from 'lucide-react'
+import { ChevronLeft, ChevronRight, Mail, MapPin, Phone } from 'lucide-react'
 import {
   CASUAL_LEAVE_MAX,
-  EARNED_LEAVE_MAX,
   isOrgAdmin,
   personLabel,
   roleLabel,
@@ -232,16 +223,6 @@ export default function EmployeeDetails({ person }: { person: Person }) {
             <InfoRow label="Join Date" value={prettyDate(person.joinDate)} />
             <InfoRow label="Reporting manager" value={manager ? personLabel(manager) : '—'} />
           </div>
-          <div className="mt-4 flex gap-2">
-            {[Share2, Globe, Mail].map((Icon, i) => (
-              <span
-                key={i}
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-[#edf7f1] text-cs-forest"
-              >
-                <Icon size={15} />
-              </span>
-            ))}
-          </div>
         </Card>
 
         <Card>
@@ -293,10 +274,6 @@ export default function EmployeeDetails({ person }: { person: Person }) {
             used={Math.max(0, SICK_LEAVE_MAX - remainingLeave(person, leaveRequests, 'sick', extras))}
             max={SICK_LEAVE_MAX}
           />
-          <p className="text-[12px] leading-relaxed text-cs-muted">
-            Earned leave starts at {EARNED_LEAVE_MAX}. Each Saturday or Sunday worked adds 1. Casual{' '}
-            {CASUAL_LEAVE_MAX} and sick {SICK_LEAVE_MAX} do not carry to the next year.
-          </p>
           {person.skills?.length ? (
             <div className="flex flex-wrap gap-1">
               {person.skills.map((skill) => (
@@ -472,10 +449,6 @@ export default function EmployeeDetails({ person }: { person: Person }) {
               <span className="h-2.5 w-2.5 rounded-sm bg-cs-forest" /> On Leave
             </span>
           </div>
-          <p className="mt-4 text-[12px] leading-relaxed text-cs-muted">
-            Viewing {personLabel(person)}. Calendar and graphs use attendance plus daily hours for every
-            working day on this record. Payroll is not shown.
-          </p>
         </Card>
       </div>
       )}
