@@ -106,9 +106,7 @@ import {
   readStoredSession,
   remoteBootstrap,
   remoteLogin,
-  remoteVerifyLoginOtp,
   remoteForgotPassword,
-  remoteCompletePasswordReset,
   remoteProvisionEmployee,
   remoteSaveSnapshot,
   remoteUpdatePassword,
@@ -267,10 +265,8 @@ function applyAutoClose(project: Project): { project: Project; didClose: boolean
 interface AppContextValue {
   session: AppUserSession | null
   login: (personId: string) => void
-  beginLogin: (email: string, password: string) => Promise<string | { challengeId: string; phoneHint: string }>
-  completeLoginOtp: (challengeId: string, otp: string) => Promise<string | null>
-  beginPasswordReset: (email: string) => Promise<string | { challengeId: string; phoneHint: string }>
-  completePasswordReset: (challengeId: string, otp: string, nextPassword: string) => Promise<string | null>
+  loginWithEmail: (email: string, password: string) => Promise<string | null>
+  requestPasswordReset: (email: string) => Promise<string | null>
   logout: () => void
   companyDomain: string
   registerEmployee: (input: {
@@ -876,82 +872,61 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [applySnapshot],
   )
 
-  const beginLogin = useCallback(async (email: string, password: string) => {
-    if (Date.now() < loginLockedUntil) {
-      const wait = Math.ceil((loginLockedUntil - Date.now()) / 1000)
-      return `Too many failed sign-ins. Try again in ${wait}s`
-    }
-    const raw = email.trim().toLowerCase()
-    if (raw.includes('@') && !raw.endsWith(`@${COMPANY_DOMAIN}`)) {
-      return `Use a company email ending with @${COMPANY_DOMAIN}`
-    }
-    await ensureRemoteConfig()
-    const cleanEmail = normalizeCompanyEmail(email)
-    if (!cleanEmail) return `Use a company email ending with @${COMPANY_DOMAIN}`
-    if (!isRemoteConfigured()) return 'Database sign-in is not active, so an OTP cannot be sent.'
-    const remote = await remoteLogin(cleanEmail, password.trim())
-    if (!remote.ok) return remote.message
-    if (!remote.data.challengeId) return 'Could not send the OTP'
-    return { challengeId: remote.data.challengeId, phoneHint: remote.data.phoneHint }
-  }, [loginLockedUntil])
-
-  const completeLoginOtp = useCallback(
-    async (challengeId: string, otp: string) => {
-      const result = await remoteVerifyLoginOtp(challengeId, otp)
-      if (!result.ok || !result.data.person || !result.data.accessToken) {
-        return result.ok ? 'That OTP is not valid' : result.message
+  const loginWithEmail = useCallback(
+    async (email: string, password: string) => {
+      if (Date.now() < loginLockedUntil) {
+        const wait = Math.ceil((loginLockedUntil - Date.now()) / 1000)
+        return `Too many failed sign-ins. Try again in ${wait}s`
       }
-      adoptRemoteSession(result.data)
+      const raw = email.trim().toLowerCase()
+      if (raw.includes('@') && !raw.endsWith(`@${COMPANY_DOMAIN}`)) {
+        return `Use a company email ending with @${COMPANY_DOMAIN}`
+      }
+      await ensureRemoteConfig()
+      const cleanEmail = normalizeCompanyEmail(email)
+      const cleanPass = password.trim()
+      if (!cleanEmail) return `Use a company email ending with @${COMPANY_DOMAIN}`
+
+      if (isRemoteConfigured()) {
+        const remote = await remoteLogin(cleanEmail, cleanPass)
+        if (remote.ok && remote.data.person && remote.data.accessToken) {
+          adoptRemoteSession(remote.data)
+          return null
+        }
+        if (!remote.ok && remote.status === 429) return remote.message
+      }
+
+      const person = people.find((p) => p.email.toLowerCase() === cleanEmail)
+      if (!person || (person.password || DEMO_PASSWORD) !== cleanPass) {
+        return 'Invalid email or password'
+      }
+      if (person.status === 'inactive' || person.lifecycleStatus === 'exited') {
+        return 'This account is closed. The employee record stays in Employees for HR records.'
+      }
+      setLoginLockedUntil(0)
+      lastActiveRef.current = Date.now()
+      if (isRemoteConfigured()) {
+        setSyncError(
+          'This session is on this browser only. Supabase sign-in did not start, so testers, team leaders, and updates are not being stored.',
+        )
+      }
+      setSession({ person, loginAt: new Date().toISOString() })
       return null
     },
-    [adoptRemoteSession],
+    [people, loginLockedUntil, adoptRemoteSession],
   )
 
-  const beginPasswordReset = useCallback(async (email: string) => {
+  const requestPasswordReset = useCallback(async (email: string) => {
     const raw = email.trim().toLowerCase()
+    if (!raw) return `Enter your company email (@${COMPANY_DOMAIN}) first`
     if (raw.includes('@') && !raw.endsWith(`@${COMPANY_DOMAIN}`)) {
       return `Use a company email ending with @${COMPANY_DOMAIN}`
     }
     await ensureRemoteConfig()
-    const cleanEmail = normalizeCompanyEmail(email)
-    if (!cleanEmail) return `Use a company email ending with @${COMPANY_DOMAIN}`
-    if (!isRemoteConfigured()) return 'Database sign-in is not active, so an OTP cannot be sent.'
-    const remote = await remoteForgotPassword(cleanEmail)
-    if (!remote.ok) return remote.message
-    if (!remote.data.challengeId) return 'Could not send the OTP'
-    return { challengeId: remote.data.challengeId, phoneHint: remote.data.phoneHint }
+    if (!isRemoteConfigured()) return 'Password reset is available after database sign-in is active'
+    const remote = await remoteForgotPassword(raw.includes('@') ? raw : `${raw}@${COMPANY_DOMAIN}`)
+    return remote.ok ? null : remote.message
   }, [])
-
-  const completePasswordReset = useCallback(
-    async (challengeId: string, otp: string, nextPassword: string) => {
-      if (!isStrongPassword(nextPassword)) return PASSWORD_POLICY
-      const result = await remoteCompletePasswordReset(challengeId, otp, nextPassword)
-      if (!result.ok || !result.data.person || !result.data.accessToken) {
-        return result.ok ? 'That OTP is not valid' : result.message
-      }
-      const person = { ...result.data.person, mustChangePassword: false }
-      const snapshot = result.data.snapshot
-        ? {
-            ...result.data.snapshot,
-            people: result.data.snapshot.people.map((p) =>
-              p.id === person.id ? { ...p, mustChangePassword: false } : p,
-            ),
-          }
-        : null
-      if (snapshot) {
-        await remoteSaveSnapshot(result.data.accessToken, {
-          ...snapshot,
-          people: publicPeople(snapshot.people),
-        })
-      }
-      adoptRemoteSession({ ...result.data, person, snapshot })
-      if (!snapshot) {
-        setPeople((prev) => prev.map((p) => (p.id === person.id ? { ...p, mustChangePassword: false } : p)))
-      }
-      return null
-    },
-    [adoptRemoteSession],
-  )
 
   const registerEmployee: AppContextValue['registerEmployee'] = useCallback(
     async (input) => {
@@ -3156,10 +3131,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value: AppContextValue = {
     session,
     login,
-    beginLogin,
-    completeLoginOtp,
-    beginPasswordReset,
-    completePasswordReset,
+    loginWithEmail,
+    requestPasswordReset,
     logout,
     companyDomain: COMPANY_DOMAIN,
     registerEmployee,
