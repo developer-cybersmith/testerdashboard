@@ -1,91 +1,83 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState } from 'react'
 import { ShieldCheck } from 'lucide-react'
 import { COMPANY_DOMAIN, useApp } from '../context/AppContext'
-import { Field, PrimaryButton, inputClass } from '../components/ui'
+import { hasPendingAzureLogin } from '../lib/api'
 
 export default function LoginPage() {
-  const { loginWithEmail, requestPasswordReset } = useApp()
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
+  const { loginWithAzure } = useApp()
   const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [azureBusy, setAzureBusy] = useState(() => hasPendingAzureLogin())
 
-  const submit = async (e: FormEvent) => {
-    e.preventDefault()
-    setNotice(null)
-    setBusy(true)
-    const result = await loginWithEmail(email, password)
-    setBusy(false)
-    setError(result)
-  }
-
-  const forgot = async () => {
-    setError(null)
-    setNotice(null)
-    setBusy(true)
-    const result = await requestPasswordReset(email)
-    setBusy(false)
-    if (result) {
-      setError(result)
-      return
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const urlError = params.get('azure_error')
+    if (urlError) {
+      setError(urlError)
+      window.history.replaceState({}, document.title, window.location.pathname)
     }
-    setNotice('If that company email is registered, a reset link has been sent.')
+    const readStoredError = () => {
+      const saved = sessionStorage.getItem('cs.azure.error')
+      if (saved) {
+        sessionStorage.removeItem('cs.azure.error')
+        setAzureBusy(false)
+        setBusy(false)
+        setError(saved)
+      }
+    }
+    readStoredError()
+    window.addEventListener('cs-azure-error', readStoredError)
+    return () => window.removeEventListener('cs-azure-error', readStoredError)
+  }, [])
+
+  const startAzure = async () => {
+    setError(null)
+    setBusy(true)
+    const result = await loginWithAzure()
+    if (result) {
+      setBusy(false)
+      setError(result)
+    }
   }
 
   return (
     <div className="flex min-h-full items-center justify-center bg-cs-bg p-4">
       <div className="w-full max-w-md overflow-hidden rounded-[28px] bg-white p-6 shadow-card md:p-10">
-        <div className="mb-8 flex items-center gap-3">
+        <div className="mb-6 flex items-center gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-cs-forest text-cs-mint">
             <ShieldCheck size={24} />
           </div>
           <div>
             <h1 className="text-[24px] font-bold tracking-tight text-cs-ink">Cybersmith Secure</h1>
-            <p className="text-[13px] text-cs-muted">Employee login</p>
+            <p className="text-[13px] text-cs-muted">
+              {azureBusy ? 'Signing you in…' : `Company SSO (@${COMPANY_DOMAIN})`}
+            </p>
           </div>
         </div>
 
-        <form className="space-y-4" onSubmit={submit}>
-          <Field label={`Company email (@${COMPANY_DOMAIN})`}>
-            <input
-              className={inputClass}
-              type="email"
-              autoComplete="username"
-              placeholder={`name@${COMPANY_DOMAIN}`}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-          </Field>
-          <Field label="Password">
-            <input
-              className={inputClass}
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </Field>
-          <button
-            type="button"
-            className="block text-left text-[13px] font-semibold text-cs-forest"
-            onClick={() => void forgot()}
-            disabled={busy}
-          >
-            Forget password?
-          </button>
-          {notice && (
-            <p className="rounded-xl bg-[#edf7f1] px-3 py-2 text-[13px] font-medium text-cs-forest">{notice}</p>
-          )}
-          {error && (
-            <p className="rounded-xl bg-red-50 px-3 py-2 text-[13px] font-medium text-red-700">{error}</p>
-          )}
-          <PrimaryButton type="submit" className="w-full" disabled={busy}>
-            {busy ? 'Checking…' : 'Sign in'}
-          </PrimaryButton>
-        </form>
+        <p className="mb-5 text-[13px] leading-relaxed text-cs-muted">
+          Sign in with your <span className="font-semibold text-cs-ink">@{COMPANY_DOMAIN}</span> Microsoft
+          account. New accounts created by HR will set a password once and then open the daily workspace.
+        </p>
+
+        {error && (
+          <p className="mb-4 rounded-xl bg-red-50 px-3 py-2 text-[13px] font-medium text-red-700">{error}</p>
+        )}
+
+        <button
+          type="button"
+          onClick={() => void startAzure()}
+          disabled={busy || azureBusy}
+          className="flex w-full items-center justify-center gap-2.5 rounded-2xl bg-cs-forest px-4 py-3.5 text-[14px] font-semibold text-white transition hover:opacity-95 disabled:opacity-60"
+        >
+          <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
+            <rect x="1" y="1" width="9" height="9" fill="#f25022" />
+            <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
+            <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
+            <rect x="11" y="11" width="9" height="9" fill="#ffb900" />
+          </svg>
+          {busy || azureBusy ? 'Signing in with Microsoft…' : 'Sign in with Microsoft (authvr5)'}
+        </button>
       </div>
     </div>
   )

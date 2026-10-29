@@ -23,7 +23,7 @@ function DashboardShell() {
   const needsLockedProfile =
     !!session &&
     (session.person.role === 'user' || session.person.role === 'tl') &&
-    (!session.person.avatarUploaded || Boolean(session.person.mustChangePassword))
+    Boolean(session.person.mustChangePassword)
 
   useEffect(() => {
     if (needsLockedProfile) {
@@ -32,7 +32,7 @@ function DashboardShell() {
       setActive('dashboard')
     }
     setMobileNavOpen(false)
-  }, [session?.person.id])
+  }, [session?.person.id, needsLockedProfile])
 
   useEffect(() => {
     if (needsLockedProfile && active !== 'profile') {

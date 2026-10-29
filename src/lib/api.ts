@@ -18,6 +18,7 @@ type ServerConfig = {
   supabaseUrl: string
   publishableKey: string
   canStore: boolean
+  azureEnabled?: boolean
 }
 
 let serverConfig: ServerConfig | null = null
@@ -50,6 +51,7 @@ export function ensureRemoteConfig() {
           supabaseUrl: json.supabaseUrl || '',
           publishableKey: json.publishableKey || '',
           canStore: Boolean(json.canStore),
+          azureEnabled: Boolean(json.azureEnabled),
         }
         return serverConfig
       })
@@ -74,6 +76,36 @@ export function storeSession(session: Pick<RemoteSession, 'accessToken' | 'refre
 
 export function clearStoredSession() {
   localStorage.removeItem(TOKEN_KEY)
+}
+
+const AZURE_PENDING_KEY = 'cs.azure.pending'
+
+export function takeAzureCallback() {
+  const params = new URLSearchParams(window.location.search)
+  const code = (params.get('code') || '').trim()
+  const state = (params.get('state') || '').trim()
+  if (code && state) {
+    sessionStorage.setItem(AZURE_PENDING_KEY, JSON.stringify({ code, state }))
+    const path = window.location.pathname.startsWith('/api/') ? '/' : window.location.pathname
+    window.history.replaceState({}, document.title, path)
+  }
+  try {
+    const raw = sessionStorage.getItem(AZURE_PENDING_KEY)
+    if (!raw) return null
+    return JSON.parse(raw) as { code: string; state: string }
+  } catch {
+    return null
+  }
+}
+
+export function clearAzureCallback() {
+  sessionStorage.removeItem(AZURE_PENDING_KEY)
+}
+
+export function hasPendingAzureLogin() {
+  if (sessionStorage.getItem(AZURE_PENDING_KEY)) return true
+  const params = new URLSearchParams(window.location.search)
+  return Boolean(params.get('code') && params.get('state'))
 }
 
 async function request<T>(
@@ -112,6 +144,19 @@ export async function remoteLogin(email: string, password: string) {
   return request<RemoteSession>('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
+  })
+}
+
+export async function remoteAzureStart(origin: string) {
+  return request<{ authorizeUrl: string; redirectUri: string }>(
+    `/auth/azure/start?origin=${encodeURIComponent(origin)}`,
+  )
+}
+
+export async function remoteAzureExchange(code: string, state: string) {
+  return request<RemoteSession>('/auth/azure/exchange', {
+    method: 'POST',
+    body: JSON.stringify({ code, state }),
   })
 }
 
