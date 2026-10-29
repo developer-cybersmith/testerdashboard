@@ -122,7 +122,7 @@ function AddEmployeeForm() {
     <Card>
       <SectionTitle title="Add employee" />
       <p className="mb-3 text-[12px] text-cs-muted">
-        HR-only. Company email (@{COMPANY_DOMAIN}). The tester or team leader is saved in the database and can sign in with the temporary password.
+        HR-only. Company email (@{COMPANY_DOMAIN}). The account is saved in Supabase; on first Microsoft (authvr5) sign-in the employee resets their password and then accesses the daily workspace.
       </p>
       <form className="grid gap-3 md:grid-cols-2" onSubmit={submit}>
         <Field label="Full name">

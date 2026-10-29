@@ -107,6 +107,10 @@ import {
   remoteBootstrap,
   remoteLogin,
   remoteForgotPassword,
+  remoteAzureStart,
+  remoteAzureExchange,
+  takeAzureCallback,
+  clearAzureCallback,
   remoteProvisionEmployee,
   remoteSaveSnapshot,
   remoteUpdatePassword,
@@ -266,6 +270,7 @@ interface AppContextValue {
   session: AppUserSession | null
   login: (personId: string) => void
   loginWithEmail: (email: string, password: string) => Promise<string | null>
+  loginWithAzure: () => Promise<string | null>
   requestPasswordReset: (email: string) => Promise<string | null>
   logout: () => void
   companyDomain: string
@@ -504,7 +509,7 @@ function todayISO() {
 
 function confirmAfterSetup(person: Person): Person {
   if (person.lifecycleStatus !== 'onboarding') return person
-  if (!person.avatarUploaded || person.mustChangePassword) return person
+  if (person.mustChangePassword) return person
   return {
     ...person,
     lifecycleStatus: 'confirmed',
@@ -591,6 +596,24 @@ export function nextEmployeeCode(people: { employeeCode?: string }[]) {
   })
   const next = Math.max(0, ...nums) + 1
   return `CSS${String(next).padStart(3, '0')}`
+}
+
+let azureLoginOnce: Promise<Awaited<ReturnType<typeof remoteAzureExchange>> | null> | null = null
+
+function exchangeAzureOnce() {
+  if (!azureLoginOnce) {
+    const pending = takeAzureCallback()
+    if (!pending?.code || !pending.state) {
+      azureLoginOnce = Promise.resolve(null)
+    } else {
+      azureLoginOnce = ensureRemoteConfig()
+        .then(() => remoteAzureExchange(pending.code, pending.state))
+        .finally(() => {
+          clearAzureCallback()
+        })
+    }
+  }
+  return azureLoginOnce
 }
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -705,10 +728,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false
+    void exchangeAzureOnce().then((res) => {
+      if (!res) return
+      if (!res.ok || !res.data.person || !res.data.accessToken) {
+        sessionStorage.setItem('cs.azure.error', res.ok ? 'Microsoft sign-in failed.' : res.message)
+        window.dispatchEvent(new Event('cs-azure-error'))
+        return
+      }
+      accessTokenRef.current = res.data.accessToken
+      storeSession({
+        accessToken: res.data.accessToken,
+        refreshToken: res.data.refreshToken,
+      })
+      if (res.data.snapshot) applySnapshot(res.data.snapshot)
+      else skipPersistRef.current = false
+      const signedIn =
+        res.data.snapshot?.people.find(
+          (p) => p.email.toLowerCase() === res.data.person.email.toLowerCase(),
+        ) || res.data.person
+      setPeople((prev) => {
+        const i = prev.findIndex(
+          (p) => p.id === signedIn.id || p.email.toLowerCase() === signedIn.email.toLowerCase(),
+        )
+        if (i < 0) return [...prev, signedIn]
+        const next = [...prev]
+        next[i] = { ...next[i], ...signedIn }
+        return next
+      })
+      setRemoteReady(Boolean(res.data.snapshot))
+      setSyncError(null)
+      setLoginLockedUntil(0)
+      lastActiveRef.current = Date.now()
+      setSession({ person: signedIn, loginAt: new Date().toISOString() })
+    })
+    const pending = takeAzureCallback()
+    if (pending?.code && pending.state) {
+      return () => {
+        cancelled = true
+      }
+    }
     void ensureRemoteConfig().then(() => {
-      if (cancelled || !isRemoteConfigured()) return
+      if (cancelled) return
       const stored = readStoredSession()
       if (!stored?.accessToken) return
+      if (!isRemoteConfigured() && !stored.accessToken.startsWith('azs1.')) return
       accessTokenRef.current = stored.accessToken
       void remoteBootstrap(stored.accessToken).then((res) => {
         if (cancelled || !res.ok) {
@@ -718,17 +781,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           return
         }
-        applySnapshot(res.data.snapshot)
+        if (res.data.snapshot) applySnapshot(res.data.snapshot)
         if (
           res.data.person &&
           res.data.person.status !== 'inactive' &&
           res.data.person.lifecycleStatus !== 'exited'
         ) {
+          const restored = res.data.person
+          setPeople((prev) => (prev.some((p) => p.id === restored.id) ? prev : [...prev, restored]))
           lastActiveRef.current = Date.now()
-          setSession({ person: res.data.person, loginAt: new Date().toISOString() })
+          setSession({ person: restored, loginAt: new Date().toISOString() })
         }
         setSyncError(null)
-        setRemoteReady(true)
+        setRemoteReady(Boolean(res.data.snapshot))
       })
     })
     return () => {
@@ -915,6 +980,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [people, loginLockedUntil, adoptRemoteSession],
   )
+
+  const loginWithAzure = useCallback(async () => {
+    await ensureRemoteConfig()
+    const res = await remoteAzureStart(window.location.origin)
+    if (!res.ok || !res.data.authorizeUrl) {
+      return res.ok ? 'Could not start Microsoft sign-in' : res.message
+    }
+    window.location.href = res.data.authorizeUrl
+    return null
+  }, [])
 
   const requestPasswordReset = useCallback(async (email: string) => {
     const raw = email.trim().toLowerCase()
@@ -1673,12 +1748,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       const current = people.find((p) => p.id === session.person.id)
       if (!current) return 'Profile not found'
-      if ((current.password || DEMO_PASSWORD) !== currentPassword.trim()) {
+      const isInitialReset = Boolean(current.mustChangePassword)
+      if (!isInitialReset && current.password && current.password !== currentPassword.trim()) {
         return 'Current password is incorrect'
       }
       const next = nextPassword.trim()
       if (!isStrongPassword(next)) return PASSWORD_POLICY
-      if (next === currentPassword.trim()) return 'Choose a different password'
+      if (!isInitialReset && currentPassword.trim() && next === currentPassword.trim()) {
+        return 'Choose a different password'
+      }
       setPeople((prev) =>
         prev.map((p) =>
           p.id === current.id
@@ -3132,6 +3210,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     session,
     login,
     loginWithEmail,
+    loginWithAzure,
     requestPasswordReset,
     logout,
     companyDomain: COMPANY_DOMAIN,

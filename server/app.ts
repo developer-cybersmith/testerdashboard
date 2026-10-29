@@ -1,10 +1,10 @@
-import { createAdminClient, resolveEnv } from '@supabase/server/core'
+import { resolveEnv } from '@supabase/server/core'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { HTTPException } from 'hono/http-exception'
 import { AuthError } from '@supabase/server'
-import { withSupabase } from '@supabase/server/adapters/hono'
 import type { SupabaseContext } from '@supabase/server'
+import { getAdminClient, getPublishableClient, getSecretKey } from './supabaseAdmin.ts'
 import type { Person } from '../src/types.ts'
 import {
   BOOTSTRAP_CACHE_KEY,
@@ -16,8 +16,18 @@ import {
   redisPing,
   redisSet,
 } from './redis.ts'
+import { createMiddleware } from 'hono/factory'
+import { people as staff } from '../src/data/staff.ts'
+import {
+  azureConfigured,
+  createAzureAuthUrl,
+  exchangeAzureCode,
+  issueAzureSessionToken,
+  peekAzureState,
+  verifyAzureSessionToken,
+} from './azureAuth.ts'
 import { syncAuthUsersIntoPeople } from './ensureStaff.ts'
-import { findPersonByEmail, loadSnapshot, samePhone, saveSnapshot, upsertPerson } from './store.ts'
+import { findPersonByEmail, loadSnapshot, saveSnapshot, upsertPerson } from './store.ts'
 import { publicPeople, type AppSnapshot } from '../src/lib/appSnapshot.ts'
 
 type Env = {
@@ -42,10 +52,7 @@ export function supabaseProcessEnv() {
     firstConfigured(resolved.data?.publishableKeys as Record<string, string> | undefined) ||
     ''
   ).trim()
-  const hasSecret = Boolean(
-    (process.env.SUPABASE_SECRET_KEY || '').trim() ||
-      (resolved.data && Object.keys(resolved.data.secretKeys || {}).length),
-  )
+  const hasSecret = Boolean(getSecretKey())
   return { supabaseUrl, publishableKey, hasSecret }
 }
 
@@ -67,7 +74,7 @@ function closedAccount(person: Person) {
 }
 
 async function cachedBootstrap(userClient: SupabaseContext['supabase']) {
-  const reader = secretConfigured() ? createAdminClient() : userClient
+  const reader = secretConfigured() ? getAdminClient() : userClient
   if (secretConfigured()) {
     const added = await syncAuthUsersIntoPeople()
     if (added > 0) await redisDel(BOOTSTRAP_CACHE_KEY)
@@ -114,6 +121,7 @@ app.get('/api/config', (c) => {
     supabaseUrl: env.supabaseUrl,
     publishableKey: env.publishableKey,
     canStore: env.hasSecret,
+    azureEnabled: azureConfigured(),
   })
 })
 
@@ -122,14 +130,201 @@ app.get('/api/health', async (c) => {
   return c.json({
     ok: Boolean(env.supabaseUrl),
     redis: await redisPing(),
+    azure: azureConfigured() ? 'configured' : 'missing',
     supabase: env.supabaseUrl || 'missing SUPABASE_URL',
     hasSecret: env.hasSecret,
     time: new Date().toISOString(),
   })
 })
 
-app.post('/api/auth/forgot', withSupabase({ auth: 'publishable' }), async (c) => {
-  const { supabase } = c.var.supabaseContext
+async function resolveEmployeeByEmail(email: string) {
+  if (secretConfigured()) {
+    try {
+      const found = await findPersonByEmail(getAdminClient(), email)
+      if (found) return found.person
+    } catch {
+      /* try the next reader */
+    }
+  }
+  const fromStaff = staff.find((p) => p.email.toLowerCase() === email)
+  return fromStaff ? publicPeople([fromStaff])[0] : null
+}
+
+const allowAzureOrUser = createMiddleware<Env>(async (c, next) => {
+  const authHeader = c.req.header('Authorization') || ''
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
+  if (token.startsWith('azs1.')) {
+    const verified = verifyAzureSessionToken(token)
+    if (!verified) return c.json({ message: 'Session expired. Please sign in again.' }, 401)
+    const claims = {
+      email: verified.email,
+      sub: verified.sub,
+      role: verified.role,
+    } as SupabaseContext['userClaims']
+    if (secretConfigured()) {
+      const admin = getAdminClient()
+      c.set('supabaseContext', {
+        supabase: admin,
+        supabaseAdmin: admin,
+        userClaims: claims,
+        jwtClaims: null,
+        authMode: 'user',
+        authKeyName: undefined,
+      })
+    } else {
+      c.set('supabaseContext', {
+        supabase: undefined as unknown as SupabaseContext['supabase'],
+        supabaseAdmin: undefined as unknown as SupabaseContext['supabaseAdmin'],
+        userClaims: claims,
+        jwtClaims: null,
+        authMode: 'user',
+        authKeyName: undefined,
+      })
+    }
+    await next()
+    return
+  }
+  if (!token) return c.json({ message: 'Unauthorized' }, 401)
+  const { data, error } = await getPublishableClient().auth.getUser(token)
+  if (error || !data.user?.email) {
+    return c.json({ message: 'Session expired. Please sign in again.' }, 401)
+  }
+  const admin = secretConfigured() ? getAdminClient() : getPublishableClient()
+  c.set('supabaseContext', {
+    supabase: admin,
+    supabaseAdmin: admin,
+    userClaims: {
+      email: data.user.email,
+      sub: data.user.id,
+      role: typeof data.user.user_metadata?.role === 'string' ? data.user.user_metadata.role : undefined,
+    } as SupabaseContext['userClaims'],
+    jwtClaims: null,
+    authMode: 'user',
+    authKeyName: undefined,
+  })
+  await next()
+})
+
+app.get('/api/auth/azure/start', async (c) => {
+  const origin =
+    c.req.query('origin') ||
+    c.req.header('origin') ||
+    new URL(c.req.url).origin ||
+    'http://localhost:5173'
+  try {
+    const result = await createAzureAuthUrl(origin)
+    return c.json(result)
+  } catch (err) {
+    return c.json(
+      { message: err instanceof Error ? err.message : 'Could not start Microsoft sign-in' },
+      503,
+    )
+  }
+})
+
+app.get('/api/auth/callback', async (c) => {
+  const code = (c.req.query('code') || '').trim()
+  const state = (c.req.query('state') || '').trim()
+  const error = (c.req.query('error_description') || c.req.query('error') || '').trim()
+  const pending = state ? await peekAzureState(state) : null
+  const returnOrigin = pending?.returnOrigin || 'http://localhost:5173'
+  if (error) {
+    return c.redirect(`${returnOrigin}/?azure_error=${encodeURIComponent(error)}`)
+  }
+  if (!code || !state) {
+    return c.redirect(`${returnOrigin}/?azure_error=${encodeURIComponent('Missing authorization code from Azure.')}`)
+  }
+  return c.redirect(
+    `${returnOrigin}/?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`,
+  )
+})
+
+app.post('/api/auth/azure/exchange', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { code?: string; state?: string }
+  const code = (body.code || '').trim()
+  const state = (body.state || '').trim()
+  if (!code || !state) {
+    return c.json({ message: 'Authorization code and state are required' }, 400)
+  }
+  let azureUser: Awaited<ReturnType<typeof exchangeAzureCode>>
+  try {
+    azureUser = await exchangeAzureCode(code, state)
+  } catch (err) {
+    return c.json(
+      { message: err instanceof Error ? err.message : 'Azure sign-in failed' },
+      401,
+    )
+  }
+
+  const email = normalizeCompanyEmail(azureUser.email)
+  if (!email) {
+    return c.json(
+      { message: `Sign in with a company account ending with @${COMPANY_DOMAIN}` },
+      403,
+    )
+  }
+
+  const person = await resolveEmployeeByEmail(email)
+  if (!person) {
+    return c.json(
+      {
+        message:
+          'This company email is not on an employee record. Ask HR to create the account first, then sign in with Microsoft.',
+      },
+      403,
+    )
+  }
+
+  if (closedAccount(person)) {
+    return c.json(
+      { message: 'This account is closed. The employee record stays in Employees for HR records.' },
+      403,
+    )
+  }
+
+  let snapshot: AppSnapshot | null = null
+  try {
+    if (secretConfigured()) snapshot = await cachedBootstrap(getAdminClient())
+  } catch {
+    snapshot = null
+  }
+  if (snapshot) {
+    const fresh = snapshot.people.find((p) => p.email.toLowerCase() === email)
+    if (fresh) {
+      await clearLoginFailures(email)
+      await cachePerson(fresh)
+      return c.json({
+        accessToken: issueAzureSessionToken({
+          email,
+          name: fresh.name,
+          sub: fresh.id,
+          role: fresh.role,
+        }),
+        refreshToken: 'azure',
+        person: fresh,
+        snapshot,
+      })
+    }
+  }
+
+  await clearLoginFailures(email)
+  await cachePerson(person)
+  const accessToken = issueAzureSessionToken({
+    email,
+    name: person.name,
+    sub: person.id,
+    role: person.role,
+  })
+  return c.json({
+    accessToken,
+    refreshToken: 'azure',
+    person,
+    snapshot,
+  })
+})
+
+app.post('/api/auth/forgot', async (c) => {
+  const supabase = getPublishableClient()
   const body = (await c.req.json().catch(() => ({}))) as { email?: string }
   const email = normalizeCompanyEmail(body.email || '')
   if (!email) {
@@ -141,8 +336,8 @@ app.post('/api/auth/forgot', withSupabase({ auth: 'publishable' }), async (c) =>
   return c.json({ ok: true })
 })
 
-app.post('/api/auth/login', withSupabase({ auth: 'publishable' }), async (c) => {
-  const { supabase, supabaseAdmin } = c.var.supabaseContext
+app.post('/api/auth/login', async (c) => {
+  const supabase = getPublishableClient()
   const body = (await c.req.json().catch(() => ({}))) as { email?: string; password?: string }
   const email = normalizeCompanyEmail(body.email || '')
   const password = (body.password || '').trim()
@@ -166,27 +361,20 @@ app.post('/api/auth/login', withSupabase({ auth: 'publishable' }), async (c) => 
 
   let found = null as Awaited<ReturnType<typeof findPersonByEmail>>
   try {
-    found = await findPersonByEmail(supabase, email)
-  } catch {
-    found = null
+    found = await findPersonByEmail(secretConfigured() ? getAdminClient() : supabase, email)
+  } catch (err) {
+    return c.json(
+      {
+        message:
+          err instanceof Error
+            ? err.message
+            : 'Could not read employee records. Add SUPABASE_SECRET_KEY and run the SQL migration.',
+      },
+      503,
+    )
   }
   if (!found) {
-    try {
-      found = await findPersonByEmail(supabaseAdmin, email)
-    } catch (err) {
-      return c.json(
-        {
-          message:
-            err instanceof Error
-              ? err.message
-              : 'Could not read employee records. Add SUPABASE_SECRET_KEY and run the SQL migration.',
-        },
-        503,
-      )
-    }
-  }
-  if (!found) {
-    return c.json({ message: 'Employee record not found. Run the SQL migration and npm run seed.' }, 404)
+    return c.json({ message: 'Employee record not found. Ask HR to create this account first.' }, 404)
   }
   if (closedAccount(found.person)) {
     return c.json(
@@ -199,13 +387,9 @@ app.post('/api/auth/login', withSupabase({ auth: 'publishable' }), async (c) => 
   await cachePerson(found.person)
   let snapshot = null
   try {
-    snapshot = await cachedBootstrap(supabase)
+    snapshot = await cachedBootstrap(secretConfigured() ? getAdminClient() : supabase)
   } catch {
-    try {
-      snapshot = secretConfigured() ? await cachedBootstrap(c.var.supabaseContext.supabaseAdmin) : null
-    } catch {
-      snapshot = null
-    }
+    snapshot = null
   }
   return c.json({
     accessToken: data.session.access_token,
@@ -215,28 +399,35 @@ app.post('/api/auth/login', withSupabase({ auth: 'publishable' }), async (c) => 
   })
 })
 
-app.get('/api/bootstrap', withSupabase({ auth: 'user' }), async (c) => {
-  const { supabase, supabaseAdmin, userClaims } = c.var.supabaseContext
+app.get('/api/bootstrap', allowAzureOrUser, async (c) => {
+  const authHeader = c.req.header('Authorization') || ''
+  const rawToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
+  const azureUser = rawToken.startsWith('azs1.') ? verifyAzureSessionToken(rawToken) : null
+  const email = (c.var.supabaseContext?.userClaims?.email || azureUser?.email || '').toLowerCase()
+  const stored = email ? await resolveEmployeeByEmail(email) : null
+
+  if (azureUser && !secretConfigured()) {
+    if (!stored) return c.json({ message: 'Employee record not found. Ask HR to create this account.' }, 404)
+    return c.json({ person: stored, snapshot: null })
+  }
+
+  const { supabase, supabaseAdmin } = c.var.supabaseContext
   let snapshot = null
   try {
     snapshot = await cachedBootstrap(supabase)
   } catch {
-    snapshot = await cachedBootstrap(supabaseAdmin)
+    snapshot = secretConfigured() ? await cachedBootstrap(supabaseAdmin) : null
   }
   if (!snapshot) {
     return c.json({ message: 'Database is empty. Run npm run seed after applying the SQL migration.' }, 404)
   }
-  const claims = userClaims as { email?: string; phone?: string } | null
-  const email = claims?.email?.toLowerCase()
-  const phone = claims?.phone || ''
-  const person = snapshot.people.find(
-    (p) => (email && p.email.toLowerCase() === email) || (phone && samePhone(p.phone || '', phone)),
-  )
+  const person =
+    (email && snapshot.people.find((p) => p.email.toLowerCase() === email)) || stored || undefined
   if (person) await cachePerson(person)
   return c.json({ person: person || null, snapshot })
 })
 
-app.put('/api/snapshot', withSupabase({ auth: 'user' }), async (c) => {
+app.put('/api/snapshot', allowAzureOrUser, async (c) => {
   const ctx = c.var.supabaseContext
   const snapshot = (await c.req.json()) as AppSnapshot
   if (!snapshot?.people?.length) {
@@ -266,7 +457,7 @@ app.put('/api/snapshot', withSupabase({ auth: 'user' }), async (c) => {
   return c.json({ ok: true })
 })
 
-app.post('/api/employees/provision', withSupabase({ auth: 'user' }), async (c) => {
+app.post('/api/employees/provision', allowAzureOrUser, async (c) => {
   const ctx = c.var.supabaseContext
   const callerEmail = ctx.userClaims?.email?.toLowerCase()
   if (!callerEmail) return c.json({ message: 'Unauthorized' }, 401)
@@ -293,7 +484,7 @@ app.post('/api/employees/provision', withSupabase({ auth: 'user' }), async (c) =
   if (!body.person?.email || !body.password) {
     return c.json({ message: 'Person and password are required' }, 400)
   }
-  const admin = createAdminClient()
+  const admin = getAdminClient()
   const email = body.person.email.toLowerCase()
   const { data: listed, error: listError } = await admin.auth.admin.listUsers({ page: 1, perPage: 200 })
   if (listError) return c.json({ message: listError.message }, 400)
@@ -321,11 +512,59 @@ app.post('/api/employees/provision', withSupabase({ auth: 'user' }), async (c) =
   return c.json({ ok: true, authUserId })
 })
 
-app.post('/api/auth/password', withSupabase({ auth: 'user' }), async (c) => {
-  const { supabase } = c.var.supabaseContext
+app.post('/api/auth/password', allowAzureOrUser, async (c) => {
+  const ctx = c.var.supabaseContext
   const body = (await c.req.json()) as { password?: string }
   if (!body.password) return c.json({ message: 'Password is required' }, 400)
-  const { error } = await supabase.auth.updateUser({ password: body.password })
+  const callerEmail = ctx?.userClaims?.email?.toLowerCase()
+  const authHeader = c.req.header('Authorization') || ''
+  const rawToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
+  if (rawToken.startsWith('azs1.') && callerEmail && secretConfigured()) {
+    const admin = getAdminClient()
+    const { data: listed } = await admin.auth.admin.listUsers({ page: 1, perPage: 200 })
+    const found = listed?.users.find((u) => u.email?.toLowerCase() === callerEmail)
+    if (found) {
+      const { error } = await admin.auth.admin.updateUserById(found.id, { password: body.password })
+      if (error) return c.json({ message: error.message }, 400)
+    }
+    const existingRow = await findPersonByEmail(admin, callerEmail)
+    if (existingRow) {
+      const updatedPerson: Person = {
+        ...existingRow.person,
+        mustChangePassword: false,
+        lifecycleStatus:
+          existingRow.person.lifecycleStatus === 'onboarding'
+            ? 'confirmed'
+            : existingRow.person.lifecycleStatus,
+        confirmationDate:
+          existingRow.person.confirmationDate || new Date().toISOString().slice(0, 10),
+      }
+      await upsertPerson(admin, updatedPerson, existingRow.authUserId || found?.id)
+      await cachePerson(updatedPerson)
+      await redisDel(BOOTSTRAP_CACHE_KEY)
+    }
+    return c.json({ ok: true })
+  }
+  const { error } = await ctx.supabase.auth.updateUser({ password: body.password })
   if (error) return c.json({ message: error.message }, 400)
+  if (callerEmail && secretConfigured()) {
+    const admin = getAdminClient()
+    const existingRow = await findPersonByEmail(admin, callerEmail)
+    if (existingRow) {
+      const updatedPerson: Person = {
+        ...existingRow.person,
+        mustChangePassword: false,
+        lifecycleStatus:
+          existingRow.person.lifecycleStatus === 'onboarding'
+            ? 'confirmed'
+            : existingRow.person.lifecycleStatus,
+        confirmationDate:
+          existingRow.person.confirmationDate || new Date().toISOString().slice(0, 10),
+      }
+      await upsertPerson(admin, updatedPerson, existingRow.authUserId || undefined)
+      await cachePerson(updatedPerson)
+      await redisDel(BOOTSTRAP_CACHE_KEY)
+    }
+  }
   return c.json({ ok: true })
 })

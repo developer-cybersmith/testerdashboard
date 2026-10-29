@@ -1,8 +1,9 @@
-import { createAdminClient, resolveEnv } from '@supabase/server/core'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { people as staff } from '../src/data/staff.ts'
 import { defaultLeaveBalance } from '../src/hr/peopleOps.ts'
 import type { Person, Role } from '../src/types.ts'
 import { findPersonByEmail, upsertPerson } from './store.ts'
+import { getAdminClient, getSecretKey } from './supabaseAdmin.ts'
 
 const COMPANY_DOMAIN = 'cybersmithsecure.com'
 
@@ -14,7 +15,7 @@ type AuthAccount = {
   meta: Record<string, unknown>
 }
 
-async function authUsersByEmail(admin: ReturnType<typeof createAdminClient>) {
+async function authUsersByEmail(admin: SupabaseClient) {
   const found = new Map<string, AuthAccount>()
   let page = 1
   for (;;) {
@@ -78,10 +79,9 @@ function personFromAuth(email: string, auth: AuthAccount): Person {
 
 /** Add a people row for every company login that is missing from the employee table. */
 export async function syncAuthUsersIntoPeople() {
-  const env = resolveEnv()
-  if (env.error || !env.data || !Object.keys(env.data.secretKeys || {}).length) return 0
+  if (!getSecretKey()) return 0
 
-  const admin = createAdminClient()
+  const admin = getAdminClient()
   const existing = await authUsersByEmail(admin)
   let added = 0
   for (const [email, auth] of existing) {
@@ -102,10 +102,9 @@ export async function syncAuthUsersIntoPeople() {
 
 /** Create the three staff logins when the secret key is present. Does not reset a password that already works. */
 export async function ensureStaffAccounts() {
-  const env = resolveEnv()
-  if (env.error || !env.data || !Object.keys(env.data.secretKeys || {}).length) return
+  if (!getSecretKey()) return
 
-  const admin = createAdminClient()
+  const admin = getAdminClient()
   const existing = await authUsersByEmail(admin)
 
   for (const person of staff) {

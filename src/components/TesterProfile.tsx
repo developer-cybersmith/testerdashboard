@@ -81,18 +81,68 @@ export default function TesterProfile() {
     setConfirmPassword('')
   }
 
+  const passwordCard = (
+    <Card>
+      <form className="space-y-3" onSubmit={savePassword}>
+        {!person.mustChangePassword && (
+          <Field label="Current password">
+            <input
+              className={inputClass}
+              type="password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              required
+            />
+          </Field>
+        )}
+        <Field label="New password">
+          <input
+            className={inputClass}
+            type="password"
+            minLength={8}
+            value={nextPassword}
+            onChange={(e) => setNextPassword(e.target.value)}
+            required
+          />
+        </Field>
+        <p className="text-[11px] text-cs-muted">{PASSWORD_POLICY}</p>
+        <Field label="Confirm new password">
+          <input
+            className={inputClass}
+            type="password"
+            minLength={8}
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            required
+          />
+        </Field>
+        {passError && (
+          <p className="rounded-xl bg-red-50 px-3 py-2 text-[13px] text-red-700">{passError}</p>
+        )}
+        {passOk && (
+          <p className="rounded-xl bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700">{passOk}</p>
+        )}
+        <PrimaryButton type="submit">
+          {person.mustChangePassword ? 'Save password & open dashboard' : 'Change password'}
+        </PrimaryButton>
+      </form>
+    </Card>
+  )
+
   return (
     <div className="grid max-w-3xl gap-4">
       {person.mustChangePassword && (
         <p className="rounded-xl bg-[#fff7ed] px-3 py-2 text-[13px] font-medium text-[#9a3412]">
-          Change the temporary password before using the rest of the workspace.
+          Welcome! Since this is a new account, set your password once to unlock your daily workspace.
         </p>
       )}
-      {!person.avatarUploaded && (
+      {!person.avatarUploaded && !person.mustChangePassword && (
         <p className="rounded-xl bg-[#fff7ed] px-3 py-2 text-[13px] font-medium text-[#9a3412]">
-          Upload a profile photo before using the rest of the workspace. This is mandatory.
+          Upload a profile photo from My Profile whenever convenient.
         </p>
       )}
+
+      {person.mustChangePassword && passwordCard}
 
       <Card>
         <form className="space-y-4" onSubmit={savePhoto}>
@@ -154,47 +204,7 @@ export default function TesterProfile() {
         </p>
       </Card>
 
-      <Card>
-        <form className="space-y-3" onSubmit={savePassword}>
-          <Field label="Current password">
-            <input
-              className={inputClass}
-              type="password"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-              required
-            />
-          </Field>
-          <Field label="New password">
-            <input
-              className={inputClass}
-              type="password"
-              minLength={8}
-              value={nextPassword}
-              onChange={(e) => setNextPassword(e.target.value)}
-              required
-            />
-          </Field>
-          <p className="text-[11px] text-cs-muted">{PASSWORD_POLICY}</p>
-          <Field label="Confirm new password">
-            <input
-              className={inputClass}
-              type="password"
-              minLength={8}
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              required
-            />
-          </Field>
-          {passError && (
-            <p className="rounded-xl bg-red-50 px-3 py-2 text-[13px] text-red-700">{passError}</p>
-          )}
-          {passOk && (
-            <p className="rounded-xl bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700">{passOk}</p>
-          )}
-          <PrimaryButton type="submit">Change password</PrimaryButton>
-        </form>
-      </Card>
+      {!person.mustChangePassword && passwordCard}
       <EmployeeSelfService />
     </div>
   )
